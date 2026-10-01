@@ -122,7 +122,8 @@ namespace Ion.Gameplay
 
             bool locked = Cursor.lockState == CursorLockMode.Locked;
             bool cameraBusy = _instantCamera != null && _instantCamera.IsCameraMode;
-            bool rmb = devices && mouse.rightButton.isPressed;
+            // Shift is the main "hold up" key; the right mouse button still works as an alternative.
+            bool rmb = devices && (kb.leftShiftKey.isPressed || kb.rightShiftKey.isPressed || mouse.rightButton.isPressed);
             if (!rmb) _waitForRmbRelease = false;
             bool held = AutomationRaise || (locked && rmb && !_waitForRmbRelease);
             SetRaised(held && !cameraBusy && _inventory.Selected != null);

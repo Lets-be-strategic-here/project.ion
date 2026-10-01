@@ -114,7 +114,9 @@ namespace Ion.Gameplay
             }
 
             bool locked = Cursor.lockState == CursorLockMode.Locked;
-            SetRaised(locked && mouse.rightButton.isPressed);
+            var kb2 = Keyboard.current;
+            bool aimHeld = mouse.rightButton.isPressed || (kb2 != null && (kb2.leftShiftKey.isPressed || kb2.rightShiftKey.isPressed));
+            SetRaised(locked && aimHeld);
 
             if (IsRaised && mouse.leftButton.wasPressedThisFrame)
                 TryCapture();

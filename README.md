@@ -10,7 +10,7 @@ Hold up a photo, line it up and place it. The world inside the photo's view is c
 |---|---|
 | WASD / Mouse / Space | Move / look / jump |
 | 1–5 or Wheel | Choose photo |
-| Hold RMB, then LMB | Raise photo, then place it |
+| Hold Shift, then LMB | Raise photo, then place it (right mouse also works) |
 | Q / E | Rotate the raised photo |
 | R | Rewind |
 | C | Instant camera |

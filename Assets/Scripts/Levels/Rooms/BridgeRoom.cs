@@ -33,7 +33,7 @@ namespace Ion.Levels
 
             ctx.PlacePhotoPickup(new Vector3(-3f, 0f, -4f), shot);
             ctx.CreateMarker(Marker, LevelColors.MarkerPhoto,
-                "Look straight ahead, hold RMB to raise the photo, LMB to place.  R rewinds");
+                "Look straight ahead, hold Shift to raise the photo, LMB to place.  R rewinds");
             ctx.CreateHint(new Vector3(0f, 0f, 5.2f), 1.5f, "Too far to jump... maybe the photo can help?", 3.5f).Once = true;
             ctx.CreateTeleporter(new Vector3(13f, 0f, 15f));
 

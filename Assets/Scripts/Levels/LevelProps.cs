@@ -181,7 +181,7 @@ namespace Ion.Levels
 
             _taken = true;
             RoomContext.UnlockInstantCamera(Film);
-            RoomContext.Toast("Instant camera!  [C] to take it out, hold RMB to aim, LMB to snap  (" + Film + " film)", 6f);
+            RoomContext.Toast("Instant camera!  [C] to take it out, hold Shift to aim, LMB to snap  (" + Film + " film)", 6f);
             if (Visual != null) Visual.SetActive(false);
             enabled = false;
         }

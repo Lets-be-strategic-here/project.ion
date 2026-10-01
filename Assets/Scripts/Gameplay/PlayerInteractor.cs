@@ -11,10 +11,10 @@ namespace Ion.Gameplay
     public sealed class PlayerInteractor : MonoBehaviour
     {
         const string PromptHolding = "LMB  place photo      Q / E  rotate      R  rewind";
-        const string PromptCameraMode = "Hold RMB  aim camera      C  put camera away";
+        const string PromptCameraMode = "Hold Shift  aim camera      C  put camera away";
         const string PromptNoFilm = "Out of film      C  put camera away";
         const string PromptPickup = "E  pick up photo";
-        const string PromptRaiseHint = "RMB  raise photo";
+        const string PromptRaiseHint = "Shift  raise photo";
         static readonly string[] s_ShootPrompts =
         {
             PromptNoFilm,

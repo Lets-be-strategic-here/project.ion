@@ -23,7 +23,7 @@ namespace Ion.Presentation
             { "Mouse", "look" },
             { "Space", "jump" },
             { "1\u20135  /  Wheel", "choose photo" },
-            { "hold RMB", "raise photo" },
+            { "hold Shift", "raise photo" },
             { "LMB", "place photo" },
             { "Q  E", "rotate raised photo" },
             { "R", "rewind" },

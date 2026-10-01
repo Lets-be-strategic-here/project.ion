@@ -22,7 +22,7 @@ namespace Ion.Presentation
         static readonly string[] Lines =
         {
             "Pick up the photo on the pedestal",
-            "Hold the right mouse button to raise it",
+            "Hold Shift to raise it",
             "Stand on the marker and line it up with the view",
             "Click to place it",
             "Press R to undo. Rewinding gives the photo back",

@@ -58,9 +58,9 @@ namespace Ion.Levels
             // In view from the spawn (about 28° left of straight ahead).
             ctx.CreateCameraPickup(new Vector3(-2.4f, 0f, 4.5f), 3);
             ctx.CreateMarker(new Vector3(0f, 0f, -11f), 180f, LevelColors.MarkerCamera,
-                "Snap the ramp from here:  C for the camera, hold RMB, LMB to shoot");
+                "Snap the ramp from here:  C for the camera, hold Shift, LMB to shoot");
             ctx.CreateMarker(new Vector3(0f, 0f, 8f), LevelColors.MarkerPhoto,
-                "Hold up your ramp snapshot here (RMB) and place it (LMB)");
+                "Hold up your ramp snapshot here (Shift) and place it (LMB)");
             ctx.CreateHint(new Vector3(0f, 0f, 12f), 2f, "Too high. There was a ramp behind you...", 3.5f).Once = true;
             ctx.CreateTeleporter(new Vector3(10.5f, CliffTop, 15.5f));
 
