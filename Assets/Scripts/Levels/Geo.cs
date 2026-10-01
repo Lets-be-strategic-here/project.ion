@@ -215,6 +215,7 @@ namespace Ion.Levels
                 m.SetVertices(v);
                 m.SetNormals(nr);
                 m.SetColors(c);
+                SetNoPattern(m, v.Count);
                 m.SetTriangles(t, 0);
                 m.RecalculateBounds();
                 m.UploadMeshData(false);
@@ -290,6 +291,7 @@ namespace Ion.Levels
                 m.SetVertices(v);
                 m.SetNormals(nr);
                 m.SetColors(c);
+                SetNoPattern(m, v.Count);
                 m.SetTriangles(t, 0);
                 m.RecalculateBounds();
                 m.UploadMeshData(false);
@@ -429,6 +431,17 @@ namespace Ion.Levels
             return result;
         }
 
+        /// <summary>
+        /// Shared unit meshes carry TEXCOORD0 = (0,0,0,0): no pattern space, Pat.None (art bible §6.1). Arch.Bake /
+        /// BakeLocal write the real pattern space when they merge these meshes.
+        /// </summary>
+        internal static void SetNoPattern(Mesh m, int vertexCount)
+        {
+            var uv = new List<Vector4>(vertexCount);
+            for (int i = 0; i < vertexCount; i++) uv.Add(Vector4.zero);
+            m.SetUVs(0, uv);
+        }
+
         static Vector3[] Ring(int sides, float y)
         {
             var pts = new Vector3[sides];
@@ -483,6 +496,7 @@ namespace Ion.Levels
                 m.SetVertices(_v);
                 m.SetNormals(_n);
                 m.SetColors(_c);
+                SetNoPattern(m, _v.Count);
                 m.SetTriangles(_t, 0);
                 m.RecalculateBounds();
                 m.UploadMeshData(false); // keep readable: the slicer and MeshCollider read it

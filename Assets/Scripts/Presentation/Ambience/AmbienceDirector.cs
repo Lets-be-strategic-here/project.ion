@@ -76,7 +76,7 @@ namespace Ion.Presentation
             {
                 bool on = Ambience.SunGlowEnabled && Ambience.SunGlowIntensity > 0f;
                 _sunGlow.gameObject.SetActive(on);
-                if (on) _sunGlow.Configure(tier >= QualityTier.High, Ambience.SunGlowIntensity);
+                if (on) _sunGlow.Configure(tier >= QualityTier.High, Ambience.SunGlowIntensity * (tier >= QualityTier.Ultra ? 1.35f : 1f));
             }
         }
 

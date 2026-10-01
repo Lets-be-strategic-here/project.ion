@@ -26,6 +26,10 @@ namespace Ion.Projection
         [System.NonSerialized] internal Vector3[] Positions, Normals;
         [System.NonSerialized] internal Color32[] Colors;
         [System.NonSerialized] internal int[] Indices;
+        /// <summary>UV0 (pattern-space xyz + PatternCode w), null when the mesh has none. See <see cref="EnsureData"/>.</summary>
+        [System.NonSerialized] internal Vector4[] Uvs;
+        /// <summary>False until <see cref="Uvs"/> is known (attached, or read back from the mesh).</summary>
+        [System.NonSerialized] bool _uvKnown;
 
         public int Count => Bounds != null ? Bounds.Length : 0;
 
@@ -40,6 +44,8 @@ namespace Ion.Projection
             Positions = Normals = null;
             Colors = null;
             Indices = null;
+            Uvs = null;
+            _uvKnown = false;
         }
 
         /// <summary>Attaches CPU copies of the mesh data (positions and indices required; normals / colours may be null).</summary>
@@ -49,6 +55,20 @@ namespace Ion.Projection
             Normals = normals;
             Colors = colors;
             Indices = indices;
+            // UV0 not given: read lazily from the mesh by EnsureData (if it has any).
+            Uvs = null;
+            _uvKnown = false;
+        }
+
+        /// <summary>Attaches CPU copies including UV0 (<paramref name="uvs"/> null = the mesh has no UV0).</summary>
+        internal void SetData(Vector3[] positions, Vector3[] normals, Color32[] colors, Vector4[] uvs, int[] indices)
+        {
+            Positions = positions;
+            Normals = normals;
+            Colors = colors;
+            Indices = indices;
+            Uvs = uvs != null && positions != null && uvs.Length == positions.Length ? uvs : null;
+            _uvKnown = true;
         }
 
         /// <summary>Makes sure the CPU copies exist (reads them back from a readable mesh once). False if impossible.</summary>
@@ -56,7 +76,11 @@ namespace Ion.Projection
         {
             if (Mesh == null) return false;
             int vc = Mesh.vertexCount;
-            if (Positions != null && Positions.Length == vc && Indices != null) return true;
+            if (Positions != null && Positions.Length == vc && Indices != null)
+            {
+                if (!_uvKnown) ReadUvs(vc);
+                return true;
+            }
             if (!Mesh.isReadable || Mesh.subMeshCount != 1) return false;
             Positions = Mesh.vertices;
             Vector3[] n = Mesh.normals;
@@ -64,7 +88,21 @@ namespace Ion.Projection
             Color32[] c = Mesh.colors32;
             Colors = c != null && c.Length == vc ? c : null;
             Indices = Mesh.GetIndices(0);
+            ReadUvs(vc);
             return true;
+        }
+
+        static readonly System.Collections.Generic.List<Vector4> s_uvRead = new System.Collections.Generic.List<Vector4>(1024);
+
+        /// <summary>Reads UV0 (all four components) from the mesh once; null if it has none or is not readable.</summary>
+        void ReadUvs(int vc)
+        {
+            _uvKnown = true;
+            Uvs = null;
+            if (Mesh == null || !Mesh.isReadable || !Mesh.HasVertexAttribute(UnityEngine.Rendering.VertexAttribute.TexCoord0)) return;
+            Mesh.GetUVs(0, s_uvRead);
+            if (s_uvRead.Count == vc) Uvs = s_uvRead.ToArray();
+            s_uvRead.Clear();
         }
     }
 }

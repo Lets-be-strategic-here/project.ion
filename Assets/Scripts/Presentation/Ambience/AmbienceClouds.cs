@@ -15,7 +15,7 @@ namespace Ion.Presentation
     {
         const int Seed = 9157;
         const int VariantCount = 4;
-        static readonly int[] k_TierCounts = { 14, 20, 28 };
+        static readonly int[] k_TierCounts = { 14, 20, 28, 34 };
 
         public static int CountForTier(int tier) => k_TierCounts[Mathf.Clamp(tier, 0, k_TierCounts.Length - 1)];
 

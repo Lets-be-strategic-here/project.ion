@@ -196,5 +196,55 @@ namespace Ion.Presentation
             c.a = a;
             return c;
         }
+
+        /// <summary>
+        /// Prompt key glyph in the bible's bracket style (§9.2): <c>Key("SHIFT")</c> → "[SHIFT]" with the
+        /// brackets dimmed, so "[SHIFT] hold up photo" reads as a key cap followed by its action.
+        /// </summary>
+        public static string Key(string key) => "<color=#9FE3FFB3>[</color>" + key + "<color=#9FE3FFB3>]</color>";
+
+        /// <summary>Same as <see cref="Key"/> for text on light (Paper) cards: Brass brackets.</summary>
+        public static string KeyOnLight(string key) => "<color=#C59A45>[</color>" + key + "<color=#C59A45>]</color>";
+
+        static readonly Vector3[] s_Corners = new Vector3[4];
+
+        /// <summary>Screen-pixel rect (origin bottom-left) of a RectTransform on a Screen Space Overlay canvas.</summary>
+        public static Rect ScreenRect(RectTransform rt)
+        {
+            rt.GetWorldCorners(s_Corners);
+            Vector2 min = s_Corners[0], max = s_Corners[0];
+            for (int i = 1; i < 4; i++)
+            {
+                min = Vector2.Min(min, s_Corners[i]);
+                max = Vector2.Max(max, s_Corners[i]);
+            }
+            return Rect.MinMaxRect(min.x, min.y, max.x, max.y);
+        }
+    }
+
+    /// <summary>
+    /// UI colours, taken from the art bible palette (§3.1) so the HUD speaks the world's language:
+    /// Paper cards, Graphite ink (never black), Ion for anything you can use, Brass for marks and the
+    /// selected state, Cyanotype for rewind. Independent of Ion.Presentation.Palette (materials).
+    /// </summary>
+    public static class UIPalette
+    {
+        public static readonly Color Paper = new Color32(0xEF, 0xEB, 0xE3, 0xFF);
+        public static readonly Color Plaster = new Color32(0xE4, 0xDD, 0xD0, 0xFF);
+        public static readonly Color Limestone = new Color32(0xD7, 0xCD, 0xBB, 0xFF);
+        public static readonly Color Graphite = new Color32(0x38, 0x3D, 0x47, 0xFF);   // the darkest value
+        public static readonly Color GraphiteSoft = new Color32(0x5B, 0x61, 0x6C, 0xFF);
+        public static readonly Color Ion = new Color32(0x9F, 0xE3, 0xFF, 0xFF);
+        public static readonly Color Brass = new Color32(0xC5, 0x9A, 0x45, 0xFF);
+        public static readonly Color Cyanotype = new Color32(0x2F, 0x5B, 0x88, 0xFF);
+        public static readonly Color Frost = new Color32(0xF5, 0xF8, 0xF8, 0xFF);
+        public static readonly Color TextileRed = new Color32(0xB2, 0x4A, 0x34, 0xFF);
+
+        /// <summary>Dark translucent card / pill behind light text.</summary>
+        public static Color Card(float alpha = 0.86f) => UIUtil.WithAlpha(Graphite, alpha);
+        /// <summary>Light text on dark cards.</summary>
+        public static Color TextLight => Paper;
+        /// <summary>Dark text on light cards (Graphite, never black).</summary>
+        public static Color TextDark => Graphite;
     }
 }

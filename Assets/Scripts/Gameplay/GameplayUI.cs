@@ -83,6 +83,12 @@ namespace Ion.Gameplay
             if (hud != null) hud.Toast(text);
         }
 
+        public static void Toast(string text, float seconds)
+        {
+            var hud = Hud;
+            if (hud != null) hud.Toast(text, seconds);
+        }
+
         /// <summary>Sets the HUD prompt, only forwarding when the text (or the Hud instance) changed. "" hides it.</summary>
         public static void SetPrompt(string text)
         {

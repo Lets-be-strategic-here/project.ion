@@ -19,6 +19,12 @@ namespace Ion.Projection
     /// and convex (the levels only use convex primitives).
     ///
     /// Single-threaded: uses static scratch buffers to stay allocation-light.
+    ///
+    /// UV0 (art bible §6.2): when the source has a 4-component TEXCOORD0 (xyz = pattern-space position,
+    /// w = PatternCode), it travels with the vertices. Edge splits interpolate it linearly (exact: xyz is affine
+    /// in the position within a flat face), kept vertices copy it, and cap vertices copy the boundary vertex they
+    /// duplicate with the cap flag set (w + 64, idempotent); a fan centroid takes the mean of its loop. Meshes
+    /// without UV0 stay without it.
     /// </summary>
     public static class MeshClipper
     {
@@ -115,7 +121,8 @@ namespace Ion.Projection
         /// </summary>
         internal interface IPieceSink
         {
-            void AddPiece(List<Vector3> positions, List<Vector3> normals, List<Color32> colors, List<int> indices);
+            /// <summary><paramref name="uvs"/>: UV0 (pattern space + code), null when the source has none.</summary>
+            void AddPiece(List<Vector3> positions, List<Vector3> normals, List<Color32> colors, List<Vector4> uvs, List<int> indices);
         }
 
         /// <summary>
@@ -141,10 +148,41 @@ namespace Ion.Projection
         /// against the planes prepared by <see cref="PrepareLocalPlanes"/>. Outside pieces go to <paramref name="sink"/>.
         /// </summary>
         internal static Classification ClipOutsideRange(Vector3[] positions, Vector3[] normals, Color32[] colors, int[] indices,
-                                                        int v0, int vn, int t0, int tn, int planeCount, IPieceSink sink)
+                                                        int v0, int vn, int t0, int tn, int planeCount, IPieceSink sink,
+                                                        Vector4[] uvs = null)
         {
-            s_bufA.LoadRange(positions, normals, colors, indices, v0, vn, t0, tn);
+            s_bufA.LoadRange(positions, normals, colors, indices, v0, vn, t0, tn, uvs);
             return ClipOutsideCore(planeCount, null, null, sink);
+        }
+
+        /// <summary>
+        /// Clips one element of a merged mesh (CPU array ranges, as <see cref="ClipOutsideRange"/>) to the INSIDE of
+        /// the planes prepared by <see cref="PrepareLocalPlanes"/>. Inside: nothing was cut (the caller copies the
+        /// element whole, nothing is emitted); Outside: nothing is inside; Straddling: the clipped part went to the sink.
+        /// Element-wise clipping keeps every cap convex: elements are closed convex pieces, while a whole merged mesh
+        /// may hold touching pieces whose cut outlines would join into one non-convex cap.
+        /// </summary>
+        internal static Classification ClipInsideRange(Vector3[] positions, Vector3[] normals, Color32[] colors, int[] indices,
+                                                       int v0, int vn, int t0, int tn, int planeCount, IPieceSink sink,
+                                                       Vector4[] uvs = null)
+        {
+            s_bufA.LoadRange(positions, normals, colors, indices, v0, vn, t0, tn, uvs);
+            MeshData cur = s_bufA, tmp = s_bufB;
+            bool clipped = false;
+            for (int i = 0; i < planeCount; i++)
+            {
+                Vector4 p = s_localPlanes[i];
+                PassResult r = ClipPass(cur, new Vector3(p.x, p.y, p.z), p.w, tmp);
+                if (r == PassResult.Empty) return Classification.Outside;
+                if (r == PassResult.Clipped)
+                {
+                    (cur, tmp) = (tmp, cur);
+                    clipped = true;
+                }
+            }
+            if (!clipped) return Classification.Inside;
+            Emit(cur, null, 0, null, sink);
+            return Classification.Straddling;
         }
 
         /// <summary>
@@ -182,7 +220,7 @@ namespace Ion.Projection
 
         static void Emit(MeshData d, string name, int plane, List<Mesh> results, IPieceSink sink)
         {
-            if (sink != null) sink.AddPiece(d.P, d.HasNormals ? d.N : null, d.HasColors ? d.C : null, d.T[0]);
+            if (sink != null) sink.AddPiece(d.P, d.HasNormals ? d.N : null, d.HasColors ? d.C : null, d.HasUV ? d.U : null, d.T[0]);
             else results.Add(d.ToMesh(name + " (cut " + plane + ")"));
         }
 
@@ -254,16 +292,20 @@ namespace Ion.Projection
             public readonly List<Vector3> N = new List<Vector3>(256);
             /// <summary>Vertex colours (only when <see cref="HasColors"/>): interpolated like normals, caps get the boundary average.</summary>
             public readonly List<Color32> C = new List<Color32>(256);
+            /// <summary>UV0 (only when <see cref="HasUV"/>): pattern-space xyz + PatternCode w.</summary>
+            public readonly List<Vector4> U = new List<Vector4>(256);
             public readonly List<List<int>> T = new List<List<int>>();
             public int SubCount;
             public bool HasNormals;
             public bool HasColors;
+            public bool HasUV;
 
             public void Reset(int subCount)
             {
                 P.Clear();
                 N.Clear();
                 C.Clear();
+                U.Clear();
                 SubCount = Mathf.Max(1, subCount);
                 while (T.Count < SubCount) T.Add(new List<int>(256));
                 for (int i = 0; i < T.Count; i++) T[i].Clear();
@@ -278,6 +320,9 @@ namespace Ion.Projection
                 mesh.GetColors(C);
                 HasColors = C.Count == P.Count && P.Count > 0;
                 if (!HasColors) C.Clear();
+                mesh.GetUVs(0, U);
+                HasUV = U.Count == P.Count && P.Count > 0;
+                if (!HasUV) U.Clear();
                 if (!HasNormals)
                 {
                     N.Clear();
@@ -290,11 +335,14 @@ namespace Ion.Projection
             }
 
             /// <summary>Loads one element (vertex range + index range) of CPU arrays; indices are rebased to 0.</summary>
-            public void LoadRange(Vector3[] positions, Vector3[] normals, Color32[] colors, int[] indices, int v0, int vn, int t0, int tn)
+            public void LoadRange(Vector3[] positions, Vector3[] normals, Color32[] colors, int[] indices, int v0, int vn, int t0, int tn,
+                                  Vector4[] uvs = null)
             {
                 Reset(1);
                 HasNormals = normals != null;
                 HasColors = colors != null && vn > 0;
+                HasUV = uvs != null && vn > 0 && uvs.Length >= v0 + vn;
+                if (HasUV) for (int i = 0; i < vn; i++) U.Add(uvs[v0 + i]);
                 for (int i = 0; i < vn; i++)
                 {
                     P.Add(positions[v0 + i]);
@@ -318,6 +366,7 @@ namespace Ion.Projection
                 mesh.SetVertices(P);
                 mesh.SetNormals(N);
                 if (HasColors && C.Count == P.Count) mesh.SetColors(C);
+                if (HasUV && U.Count == P.Count) mesh.SetUVs(0, U);
                 mesh.subMeshCount = SubCount;
                 for (int s = 0; s < SubCount; s++) mesh.SetTriangles(T[s], s, false);
                 mesh.RecalculateBounds();
@@ -346,6 +395,11 @@ namespace Ion.Projection
         static readonly List<int> s_loopStarts = new List<int>(4);
         static Vector3[] s_capPoints = new Vector3[64];
         static float[] s_capAngles = new float[64];
+        // UV0 beside the cut points (fallback cap) and per on-plane kept position (boundary cap).
+        static readonly List<Vector4> s_cutU = new List<Vector4>(64);
+        static Vector4[] s_capU = new Vector4[64];
+        static int[] s_capOrder = new int[64];
+        static readonly Dictionary<Vector3, int> s_planeVertex = new Dictionary<Vector3, int>(64, new ExactVector3Comparer());
 
         static MeshData s_src, s_dst; // the buffers of the pass in progress
 
@@ -453,11 +507,14 @@ namespace Ion.Projection
             dst.Reset(src.SubCount);
             dst.HasNormals = src.HasNormals;
             dst.HasColors = src.HasColors;
+            dst.HasUV = src.HasUV;
             for (int i = 0; i < vc; i++) s_remap[i] = -1;
             s_edgeCache.Clear();
             s_dstOnPlane.Clear();
             s_cut.Clear();
+            s_cutU.Clear();
             s_cutEdges.Clear();
+            s_planeVertex.Clear();
 
             for (int s = 0; s < src.SubCount; s++)
             {
@@ -483,9 +540,9 @@ namespace Ion.Projection
                     if (sa <= 0 && sb <= 0 && sc <= 0)
                     {
                         // Removed (has at least one strictly outside vertex); its on-plane vertices lie on the cut.
-                        if (sa == 0) s_cut.Add(P[a]);
-                        if (sb == 0) s_cut.Add(P[b]);
-                        if (sc == 0) s_cut.Add(P[c]);
+                        if (sa == 0) AddCut(P[a], a);
+                        if (sb == 0) AddCut(P[b], b);
+                        if (sc == 0) AddCut(P[c], c);
                         continue;
                     }
 
@@ -509,8 +566,15 @@ namespace Ion.Projection
         {
             int s0 = s_side[i0], s1 = s_side[i1];
             if (s0 >= 0) s_poly.Add(Map(i0));
-            if (s0 == 0) s_cut.Add(s_src.P[i0]);
+            if (s0 == 0) AddCut(s_src.P[i0], i0);
             if (s0 * s1 < 0) s_poly.Add(Intersect(i0, i1));
+        }
+
+        /// <summary>Records a cut point of the source (index <paramref name="srcIndex"/>) for the fallback cap.</summary>
+        static void AddCut(Vector3 p, int srcIndex)
+        {
+            s_cut.Add(p);
+            if (s_src.HasUV) s_cutU.Add(s_src.U[srcIndex]);
         }
 
         static int Map(int i)
@@ -521,6 +585,7 @@ namespace Ion.Projection
             s_dst.P.Add(s_src.P[i]);
             s_dst.N.Add(s_src.N[i]);
             if (s_src.HasColors) s_dst.C.Add(s_src.C[i]);
+            if (s_src.HasUV) s_dst.U.Add(s_src.U[i]);
             s_dstOnPlane.Add(s_side[i] == 0);
             s_remap[i] = r;
             return r;
@@ -547,9 +612,17 @@ namespace Ion.Projection
             s_dst.P.Add(pos);
             s_dst.N.Add(nrm);
             if (s_src.HasColors) s_dst.C.Add(Color32.Lerp(s_src.C[a], s_src.C[b], t));
+            Vector4 uv = default;
+            if (s_src.HasUV)
+            {
+                // Same canonical direction and t as the position: exact for the affine pattern space.
+                uv = Vector4.LerpUnclamped(s_src.U[a], s_src.U[b], t);
+                s_dst.U.Add(uv);
+            }
             s_dstOnPlane.Add(true);
             s_edgeCache[key] = r;
             s_cut.Add(pos);
+            if (s_src.HasUV) s_cutU.Add(uv);
             return r;
         }
 
@@ -574,6 +647,13 @@ namespace Ion.Projection
             tris.Add(b);
             tris.Add(c);
             bool oa = s_dstOnPlane[a], ob = s_dstOnPlane[b], oc = s_dstOnPlane[c];
+            if (s_dst.HasUV)
+            {
+                // First kept vertex at each on-plane position: the cap copies its UV0 (cap flag set).
+                if (oa && !s_planeVertex.ContainsKey(pa)) s_planeVertex.Add(pa, a);
+                if (ob && !s_planeVertex.ContainsKey(pb)) s_planeVertex.Add(pb, b);
+                if (oc && !s_planeVertex.ContainsKey(pc)) s_planeVertex.Add(pc, c);
+            }
             if (oa && ob) s_cutEdges.Add(new Edge(pa, pb));
             if (ob && oc) s_cutEdges.Add(new Edge(pb, pc));
             if (oc && oa) s_cutEdges.Add(new Edge(pc, pa));
@@ -648,8 +728,10 @@ namespace Ion.Projection
             s_loopStarts.Add(s_loop.Count);
 
             List<Vector3> P = s_dst.P, N = s_dst.N;
+            List<Vector4> U = s_dst.U;
             List<int> tris = s_dst.T[0];
             bool colors = s_dst.HasColors;
+            bool uvs = s_dst.HasUV;
             Color32 capColor = colors ? CapColor() : default;
             for (int l = 0; l + 1 < s_loopStarts.Count; l++)
             {
@@ -657,19 +739,26 @@ namespace Ion.Projection
                 if (count < 3) continue;
 
                 Vector3 centroid = Vector3.zero;
-                for (int i = 0; i < count; i++) centroid += s_loop[begin + i];
+                Vector4 uvSum = Vector4.zero;
+                for (int i = 0; i < count; i++)
+                {
+                    centroid += s_loop[begin + i];
+                    if (uvs) uvSum += PlaneVertexUV(s_loop[begin + i]);
+                }
                 centroid /= count;
 
                 int center = P.Count;
                 P.Add(centroid);
                 N.Add(capNormal);
                 if (colors) s_dst.C.Add(capColor);
+                if (uvs) U.Add(CapCentreUV(uvSum / count, PlaneVertexUV(s_loop[begin])));
                 int first = P.Count;
                 for (int i = 0; i < count; i++)
                 {
                     P.Add(s_loop[begin + i]);
                     N.Add(capNormal);
                     if (colors) s_dst.C.Add(capColor);
+                    if (uvs) U.Add(CapUV(PlaneVertexUV(s_loop[begin + i])));
                 }
                 for (int i = 0; i < count; i++)
                 {
@@ -682,6 +771,33 @@ namespace Ion.Projection
             return true;
         }
 
+        /// <summary>UV0 of the kept vertex at an on-plane position (the boundary vertex a cap vertex duplicates).</summary>
+        static Vector4 PlaneVertexUV(Vector3 p)
+        {
+            return s_planeVertex.TryGetValue(p, out int i) ? s_dst.U[i] : Vector4.zero;
+        }
+
+        /// <summary>Cap vertex UV0: the same pattern-space position, the code with the cap flag (idempotent).</summary>
+        static Vector4 CapUV(Vector4 uv)
+        {
+            // Coincident boundary vertices may come from a surface (code) or an earlier cap (code + flag):
+            // strip the flag before setting it so every cap vertex carries exactly code + flag.
+            int code = Mathf.RoundToInt(uv.w);
+            uv.w = (code & (CapFlag - 1)) + CapFlag;
+            return uv;
+        }
+
+        /// <summary>Fan centre UV0: the averaged (affine, so exact) pattern position with one loop vertex's code,
+        /// never an average of codes (a loop can mix surface and earlier-cap vertices).</summary>
+        static Vector4 CapCentreUV(Vector4 average, Vector4 codeSource)
+        {
+            average.w = codeSource.w;
+            return CapUV(average);
+        }
+
+        /// <summary>PatternCode cap flag (Ion.Presentation.PatternCode.CapFlag; kept here so Projection has no Presentation dependency).</summary>
+        internal const int CapFlag = 64;
+
         /// <summary>
         /// Fallback cap (degenerate boundaries): weld the cut points, sort them by angle around their
         /// centroid in the plane and fan-triangulate from the centroid.
@@ -690,26 +806,36 @@ namespace Ion.Projection
         {
             int count = 0;
             float weldSqr = WeldEpsilon * WeldEpsilon;
+            bool uvs = s_dst.HasUV && s_cutU.Count == s_cut.Count;
             for (int i = 0; i < s_cut.Count; i++)
             {
                 Vector3 p = s_cut[i];
                 bool dup = false;
                 for (int j = 0; j < count; j++)
                 {
-                    if ((s_capPoints[j] - p).sqrMagnitude <= weldSqr) { dup = true; break; }
+                    if ((s_capPoints[j] - p).sqrMagnitude <= weldSqr) { dup = true; break; } // a weld keeps the first point's UV0
                 }
                 if (dup) continue;
                 if (count == s_capPoints.Length)
                 {
                     System.Array.Resize(ref s_capPoints, count * 2);
                     System.Array.Resize(ref s_capAngles, count * 2);
+                    System.Array.Resize(ref s_capU, count * 2);
+                    System.Array.Resize(ref s_capOrder, count * 2);
                 }
-                s_capPoints[count++] = p;
+                s_capPoints[count] = p;
+                s_capU[count] = uvs ? s_cutU[i] : default;
+                count++;
             }
             if (count < 3) return;
 
             Vector3 centroid = Vector3.zero;
-            for (int i = 0; i < count; i++) centroid += s_capPoints[i];
+            Vector4 uvSum = Vector4.zero;
+            for (int i = 0; i < count; i++)
+            {
+                centroid += s_capPoints[i];
+                uvSum += s_capU[i];
+            }
             centroid /= count;
 
             Vector3 u = Vector3.Cross(capNormal, Mathf.Abs(capNormal.y) < 0.9f ? Vector3.up : Vector3.right).normalized;
@@ -718,25 +844,31 @@ namespace Ion.Projection
             {
                 Vector3 r = s_capPoints[i] - centroid;
                 s_capAngles[i] = Mathf.Atan2(Vector3.Dot(r, v), Vector3.Dot(r, u));
+                s_capOrder[i] = i;
             }
-            System.Array.Sort(s_capAngles, s_capPoints, 0, count);
+            // Sort an index permutation so the UV0 beside each point follows it.
+            System.Array.Sort(s_capAngles, s_capOrder, 0, count);
 
             // Increasing angle runs from u towards v, and cross(u, v) = capNormal; Unity front faces
             // have normal = cross(b - a, c - a), so (center, p[i], p[i+1]) faces along capNormal.
             List<Vector3> P = s_dst.P, N = s_dst.N;
             List<int> tris = s_dst.T[0];
             bool colors = s_dst.HasColors;
+            bool dstUV = s_dst.HasUV;
             Color32 capColor = colors ? CapColor() : default;
             int center = P.Count;
             P.Add(centroid);
             N.Add(capNormal);
             if (colors) s_dst.C.Add(capColor);
+            if (dstUV) s_dst.U.Add(CapCentreUV(uvSum / count, s_capU[0]));
             int first = P.Count;
             for (int i = 0; i < count; i++)
             {
-                P.Add(s_capPoints[i]);
+                int k = s_capOrder[i];
+                P.Add(s_capPoints[k]);
                 N.Add(capNormal);
                 if (colors) s_dst.C.Add(capColor);
+                if (dstUV) s_dst.U.Add(CapUV(s_capU[k]));
             }
             for (int i = 0; i < count; i++)
             {

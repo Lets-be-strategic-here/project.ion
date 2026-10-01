@@ -1,23 +1,26 @@
 using System.Collections.Generic;
 using Ion.Levels;
+using Ion.Presentation.Motion;
 using Ion.Projection;
 using UnityEngine;
 
 namespace Ion.Presentation
 {
     /// <summary>
-    /// "Freshly developed" glow on the pieces a placement just pasted: a warm emission that decays over
-    /// <see cref="Seconds"/>, written with a MaterialPropertyBlock. Renderers with a property block drop
+    /// "Freshly developed" look on the pieces a placement just pasted (art bible §9.1): they start in a warm,
+    /// washed-out print tone and develop into their true colours over 0.6 s (sine in-out), written as an
+    /// emission offset with a MaterialPropertyBlock. Renderers with a property block drop
     /// out of the SRP batcher, so the block is removed again as soon as the pulse ends (the batching cost
     /// lasts 0.6 s, after which the renderers are exactly as they were).
     /// </summary>
     public sealed class FreshPulse : MonoBehaviour
     {
-        public const float Seconds = 0.6f;
-        public float Intensity = 0.42f;
+        public const float Seconds = Feel.DevelopSeconds;
+        public float Intensity = 0.38f;
 
         static readonly int EmissionId = Shader.PropertyToID("_EmissionColor");
-        static readonly Color Warm = new Color(1f, 0.93f, 0.8f);
+        // A warm, desaturated print tone (Paper pushed toward Brass).
+        static readonly Color Warm = new Color(1f, 0.92f, 0.78f);
 
         readonly List<Renderer> _renderers = new List<Renderer>(128);
         readonly List<Color> _baseEmission = new List<Color>(128);
@@ -84,7 +87,7 @@ namespace Ion.Presentation
                 return;
             }
             if (_block == null) _block = new MaterialPropertyBlock();
-            float glow = Intensity * k * k; // fast fade, long tail
+            float glow = Intensity * (1f - Ease.InOutSine(_t / Seconds)); // develops in
             for (int i = 0; i < _renderers.Count; i++)
             {
                 Renderer r = _renderers[i];

@@ -31,57 +31,106 @@ namespace Ion.Levels
     }
 
     /// <summary>
-    /// Teleporter shimmer: thin glowing rings that rise from the pad and shrink away, and a handful of
-    /// motes spiralling up. Plain transforms on shared emissive materials (SRP-batched, no particles
-    /// system, no shadows); animated only while the player is within <see cref="ActiveRange"/>.
+    /// Teleporter shimmer, in the Light Table language: three thin octagonal Ion rings (the disc's own 8-gon)
+    /// that rise from the pad and narrow away, and a few Ion / Frost motes drifting straight up, like dust in a
+    /// projector beam. Plain transforms on the shared role materials (SRP-batched, no particle system, no
+    /// shadows); animated only while the player is within <see cref="ActiveRange"/>. No spin: the architecture
+    /// is rigid, and so is its light.
     /// </summary>
     public sealed class TeleporterFx : MonoBehaviour
     {
-        const int RingCount = 3, MoteCount = 12;
-        const float Height = 2.5f, ActiveRange = 45f;
+        const int RingCount = 3, MoteCount = 10;
+        const float Height = 2.25f, ActiveRange = 45f;
+        const string RingsName = "ShimmerRings", MotesName = "Motes";
 
         static Mesh s_Ring;
 
-        readonly Transform[] _rings = new Transform[RingCount];
-        readonly Transform[] _motes = new Transform[MoteCount];
+        [RuntimeInitializeOnLoadMethod(RuntimeInitializeLoadType.SubsystemRegistration)]
+        static void ResetStatics() => s_Ring = null;
+
+        // Two draw calls per teleporter (was 13): the rings and the motes are each one dynamic mesh whose
+        // vertices are rewritten per frame from a template (uniform xz / xyz scales keep the normals valid).
+        Mesh _rings, _motes;
+        Vector3[] _ringTemplate, _ringVerts, _cubeTemplate, _moteVerts;
         readonly float[] _seeds = new float[MoteCount];
 
         void Awake()
         {
-            if (s_Ring == null) s_Ring = PhotoPickup.BuildRing(0.78f, 0.86f, 32);
-            Material ringMat = Palette.GetEmissive(Palette.Teal, 1.1f);
-            Material moteA = Palette.GetEmissive(Palette.Cream, 1.2f);
-            Material moteB = Palette.GetEmissive(Palette.Teal, 1.2f);
-            // A clone (a photo of the teleporter pasted elsewhere) already carries the pieces: reuse them.
-            int rings = 0, motes = 0;
+            if (s_Ring == null) s_Ring = PhotoPickup.BuildRing(0.6f, 0.66f, 8);
+            _ringTemplate = s_Ring.vertices;
+            _cubeTemplate = Geo.CubeMesh.vertices;
+
+            _rings = BuildCombined("Ion_TeleporterRings", s_Ring, RingCount, Quaternion.Euler(0f, 22.5f, 0f), out _ringVerts);
+            _motes = BuildCombined("Ion_TeleporterMotes", Geo.CubeMesh, MoteCount, Quaternion.identity, out _moteVerts);
+            // The pieces are fixed at the pad's origin (the rotation is baked into the template copy above).
+            for (int i = 0; i < _ringTemplate.Length; i++) _ringTemplate[i] = Quaternion.Euler(0f, 22.5f, 0f) * _ringTemplate[i];
+
+            // A clone (a photo of the teleporter pasted elsewhere) already carries the pieces: reuse the objects
+            // but give them this instance's own meshes. Old 13-piece clones are tidied up.
+            var doomed = new System.Collections.Generic.List<GameObject>();
+            Transform ringsT = null, motesT = null;
             foreach (Transform child in transform)
             {
-                if (child.name == "ShimmerRing" && rings < RingCount) _rings[rings++] = child;
-                else if (child.name == "Mote" && motes < MoteCount) _motes[motes++] = child;
+                if (child.name == RingsName && ringsT == null) ringsT = child;
+                else if (child.name == MotesName && motesT == null) motesT = child;
+                else if (child.name == "ShimmerRing" || child.name == "Mote") doomed.Add(child.gameObject);
             }
-            for (int i = rings; i < RingCount; i++)
-            {
-                var go = Geo.Visual("ShimmerRing", transform, s_Ring, new Vector3(0f, 0.3f, 0f), Quaternion.identity, Vector3.one, Palette.Teal);
-                Setup(go, ringMat);
-                _rings[i] = go.transform;
-            }
-            for (int i = motes; i < MoteCount; i++)
-            {
-                var go = Geo.Visual("Mote", transform, Geo.CubeMesh, Vector3.zero, Quaternion.identity, Vector3.one * 0.06f, Palette.Cream);
-                Setup(go, (i & 1) == 0 ? moteA : moteB);
-                _motes[i] = go.transform;
-            }
+            foreach (GameObject go in doomed) Destroy(go);
+            Attach(ref ringsT, RingsName, _rings, Palette.Get(Mat.Ion));
+            Attach(ref motesT, MotesName, _motes, Palette.Get(Mat.Ion));
+
             var rng = new System.Random(GetInstanceID());
             for (int i = 0; i < MoteCount; i++) _seeds[i] = (float)rng.NextDouble();
             Animate(0f);
         }
 
-        static void Setup(GameObject go, Material m)
+        void OnDestroy()
         {
-            var r = go.GetComponent<MeshRenderer>();
+            if (_rings != null) Destroy(_rings);
+            if (_motes != null) Destroy(_motes);
+        }
+
+        void Attach(ref Transform t, string name, Mesh mesh, Material m)
+        {
+            if (t == null)
+            {
+                var go = new GameObject(name);
+                t = go.transform;
+                t.SetParent(transform, false);
+                go.AddComponent<MeshFilter>();
+                go.AddComponent<MeshRenderer>();
+            }
+            t.localPosition = Vector3.zero;
+            t.localRotation = Quaternion.identity;
+            t.localScale = Vector3.one;
+            if (!t.TryGetComponent(out MeshFilter mf)) mf = t.gameObject.AddComponent<MeshFilter>();
+            mf.sharedMesh = mesh;
+            if (!t.TryGetComponent(out MeshRenderer r)) r = t.gameObject.AddComponent<MeshRenderer>();
             r.sharedMaterial = m;
             r.shadowCastingMode = UnityEngine.Rendering.ShadowCastingMode.Off;
             r.receiveShadows = false;
+        }
+
+        static Mesh BuildCombined(string name, Mesh src, int copies, Quaternion rot, out Vector3[] verts)
+        {
+            Vector3[] v = src.vertices, n = src.normals;
+            int[] t = src.triangles;
+            verts = new Vector3[v.Length * copies];
+            var normals = new Vector3[verts.Length];
+            var tris = new int[t.Length * copies];
+            for (int c = 0; c < copies; c++)
+            {
+                for (int i = 0; i < v.Length; i++) normals[c * v.Length + i] = n.Length == v.Length ? rot * n[i] : Vector3.up;
+                for (int i = 0; i < t.Length; i++) tris[c * t.Length + i] = t[i] + c * v.Length;
+            }
+            var mesh = new Mesh { name = name };
+            mesh.MarkDynamic();
+            mesh.vertices = verts;
+            mesh.normals = normals;
+            mesh.triangles = tris;
+            // Fixed bounds around the beam (no per-frame recalculation).
+            mesh.bounds = new Bounds(new Vector3(0f, Height * 0.5f + 0.3f, 0f), new Vector3(1.6f, Height + 1f, 1.6f));
+            return mesh;
         }
 
         void Update()
@@ -93,26 +142,35 @@ namespace Ion.Levels
 
         void Animate(float time)
         {
+            int rn = _ringTemplate.Length;
             for (int i = 0; i < RingCount; i++)
             {
-                float p = Mathf.Repeat(time * 0.42f + i / (float)RingCount, 1f);
-                float fade = Mathf.Clamp01(p / 0.12f) * Mathf.Clamp01((1f - p) / 0.25f);
-                float s = Mathf.Lerp(1.02f, 0.6f, p) * Mathf.Lerp(0.85f, 1f, fade);
-                _rings[i].localPosition = new Vector3(0f, 0.25f + p * Height, 0f);
-                _rings[i].localScale = new Vector3(s * fade, 1f, s * fade);
-                _rings[i].localRotation = Quaternion.Euler(0f, time * 30f + i * 40f, 0f);
+                float p = Mathf.Repeat(time * 0.36f + i / (float)RingCount, 1f);
+                float fade = Mathf.Clamp01(p / 0.12f) * Mathf.Clamp01((1f - p) / 0.3f);
+                float s = Mathf.Lerp(1f, 0.55f, p) * Mathf.Lerp(0.9f, 1f, fade) * fade;
+                float y = 0.27f + p * Height;
+                for (int k = 0; k < rn; k++)
+                {
+                    Vector3 q = _ringTemplate[k];
+                    _ringVerts[i * rn + k] = new Vector3(q.x * s, q.y + y, q.z * s);
+                }
             }
+            _rings.vertices = _ringVerts;
+
+            int cn = _cubeTemplate.Length;
             for (int i = 0; i < MoteCount; i++)
             {
                 float seed = _seeds[i];
-                float p = Mathf.Repeat(time * (0.28f + seed * 0.2f) + seed, 1f);
-                float a = seed * 6.283f + time * (1.2f + seed);
-                float r = 0.55f + 0.2f * Mathf.Sin(seed * 9f + p * 3f);
-                _motes[i].localPosition = new Vector3(Mathf.Cos(a) * r, 0.2f + p * (Height + 0.4f), Mathf.Sin(a) * r);
-                float size = 0.07f * Mathf.Sin(p * Mathf.PI);
-                _motes[i].localScale = new Vector3(size, size, size);
-                _motes[i].localRotation = Quaternion.Euler(a * 40f, a * 57f, 0f);
+                float p = Mathf.Repeat(time * (0.16f + seed * 0.1f) + seed, 1f);
+                // Seeded spots on a 4 x 4 grid over the disc, drifting a little as they rise.
+                int cell = Mathf.FloorToInt(seed * 16f);
+                float gx = ((cell & 3) - 1.5f) * 0.28f, gz = ((cell >> 2) - 1.5f) * 0.28f;
+                float drift = Mathf.Sin(time * 0.7f + seed * 9f) * 0.04f;
+                var c = new Vector3(gx + drift, 0.3f + p * (Height + 0.2f), gz - drift);
+                float size = 0.045f * Mathf.Sin(p * Mathf.PI);
+                for (int k = 0; k < cn; k++) _moteVerts[i * cn + k] = c + _cubeTemplate[k] * size;
             }
+            _motes.vertices = _moteVerts;
         }
     }
 
@@ -154,38 +212,7 @@ namespace Ion.Levels
         }
     }
 
-    /// <summary>A floating instant camera; walking into it unlocks the player's camera.</summary>
-    public sealed class CameraPickup : MonoBehaviour
-    {
-        public int Film = 3;
-        public float Radius = 1.2f;
-        public GameObject Visual;
-
-        bool _taken;
-
-        /// <summary>Puts the camera back on its pedestal (game restart).</summary>
-        public void ResetPickup()
-        {
-            _taken = false;
-            enabled = true;
-            if (Visual != null) Visual.SetActive(true);
-        }
-
-        void Update()
-        {
-            if (_taken) return;
-            var player = FirstPersonController.Current;
-            if (player == null) return;
-            Vector3 d = player.transform.position - transform.position;
-            if (d.y < -1f || d.y > 2.5f || d.x * d.x + d.z * d.z > Radius * Radius) return;
-
-            _taken = true;
-            RoomContext.UnlockInstantCamera(Film);
-            RoomContext.Toast("Instant camera!  [C] to take it out, hold RMB to aim, LMB to snap  (" + Film + " film)", 6f);
-            if (Visual != null) Visual.SetActive(false);
-            enabled = false;
-        }
-    }
+    // CameraPickup moved to Ion.Gameplay (Lead D, art bible §11); its stand visual is PropKit.CameraStand.
 
     /// <summary>World-space legacy uGUI text (renders fine in URP, no TMP assets needed).</summary>
     public static class WorldText

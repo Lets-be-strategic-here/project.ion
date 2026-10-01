@@ -10,7 +10,9 @@ namespace Ion.Presentation.Quality
     /// Auto (QualityTier.Preference == -1): starts at High, waits 2 s, measures 3 s of unscaled frame
     /// time and steps a tier down while that average is above 22 ms (re-measuring after each step).
     /// Then it monitors 5 s windows: above 20 ms average steps down; below 11 ms for three windows
-    /// (15 s) steps up, unless the target tier was already dropped from more than once. Inside a tier
+    /// (15 s) steps up to High, unless the target tier was already dropped from more than once. Ultra is only
+    /// picked when the sustained frame time stays under 8 ms for four windows (20 s) at full scale, never again
+    /// after Auto had to leave it, and Auto steps back down to High above 13 ms. Inside a tier
     /// it tunes the URP render scale in 0.05 steps between 0.6 and the tier's base scale (1.5 s windows,
     /// with back-off when an increase does not hold).
     /// Fixed tier: applies that tier's table at its base scale and does not adapt.
@@ -18,6 +20,9 @@ namespace Ion.Presentation.Quality
     /// Tier tables (render scale / MSAA / shadow distance / sun shadows / shadow map / soft filter):
     ///   High 1.0 / 4x / 36 m / Soft / 4096 (2048 on small-texture devices) / Medium;  Med 0.85 / 2x / 30 m / Soft / 1024 / Low;
     ///   Low 0.75 / 1x / 0 / None. Low relies on the baked contact shading (Kit.Contact, decor AO).
+    ///   Ultra 1.0 / 4x / 48 m / Soft, 2 cascades / 4096 / High. The canvas already renders at
+    ///   min(devicePixelRatio, 1.5) (WebGL template), so scale 1.0 is that resolution. Ultra also turns on HDR
+    ///   (for bloom, when the GPU has float targets), and UltraFx adds local lights, bloom and AO.
     ///
     /// Only public URP 17.3 setters are used: renderScale, msaaSampleCount, shadowDistance,
     /// mainLightShadowmapResolution. supportsMainLightShadows and supportsSoftShadows have internal
@@ -37,16 +42,23 @@ namespace Ion.Presentation.Quality
             public LightShadows Shadows;
             public int ShadowRes; // 0 = keep the asset's own value
             public SoftShadowQuality Soft;
+            public int Cascades;
+            public bool Hdr;
         }
 
         static readonly TierSpec[] k_Tiers =
         {
-            new TierSpec { Scale = 0.75f, Msaa = 1, ShadowDistance = 0f, Shadows = LightShadows.None, ShadowRes = 1024, Soft = SoftShadowQuality.Low },
-            new TierSpec { Scale = 0.85f, Msaa = 2, ShadowDistance = 30f, Shadows = LightShadows.Soft, ShadowRes = 1024, Soft = SoftShadowQuality.Low },
-            // High: a 4096 map over a slightly shorter distance (~2.5x the texel density), so the long
-            // ramp / wall shadow edges are smooth instead of stair-stepped.
-            new TierSpec { Scale = 1f, Msaa = 4, ShadowDistance = 36f, Shadows = LightShadows.Soft, ShadowRes = 4096, Soft = SoftShadowQuality.Medium },
+            new TierSpec { Scale = 0.75f, Msaa = 1, ShadowDistance = 0f, Shadows = LightShadows.None, ShadowRes = 1024, Soft = SoftShadowQuality.Low, Cascades = 1 },
+            new TierSpec { Scale = 0.85f, Msaa = 2, ShadowDistance = 28f, Shadows = LightShadows.Soft, ShadowRes = 2048, Soft = SoftShadowQuality.Low, Cascades = 1 },
+            // High: a 4096 map over 30 m. FlatToon thresholds the filtered shadow to one crisp edge, so the PCF
+            // filter only smooths the edge's path (no wobble, no halo) at this texel density.
+            new TierSpec { Scale = 1f, Msaa = 4, ShadowDistance = 30f, Shadows = LightShadows.Soft, ShadowRes = 4096, Soft = SoftShadowQuality.Medium, Cascades = 1 },
+            // Ultra: two cascades over a longer distance (the near one keeps High's texel density), the softest filter.
+            new TierSpec { Scale = 1f, Msaa = 4, ShadowDistance = 48f, Shadows = LightShadows.Soft, ShadowRes = 4096, Soft = SoftShadowQuality.High, Cascades = 2, Hdr = true },
         };
+
+        /// <summary>Near-cascade split for Ultra (fraction of the shadow distance): ~19 m.</summary>
+        public const float UltraCascadeSplit = 0.4f;
 
         public const float MinRenderScale = 0.6f;
         public const float MaxRenderScale = 1f;
@@ -59,6 +71,9 @@ namespace Ion.Presentation.Quality
         const float MonitorSeconds = 5f;
         const float MonitorDownMs = 20f;
         const float TierUpMs = 11f;
+        const float UltraUpMs = 8f;            // Auto picks Ultra only when sustained frames stay under 8 ms ...
+        const int UltraUpWindows = 4;          // ... for 4 x 5 s = 20 s
+        const float UltraDownMs = 13f;         // and leaves it (for good) above 13 ms
         const int TierUpWindows = 3;           // 3 x 5 s = 15 s
         const int MaxDropsBeforeNoReturn = 1;  // may return to a tier dropped from at most once
 
@@ -94,7 +109,7 @@ namespace Ion.Presentation.Quality
         float _winTime;
         int _winFrames;
         int _upStreak;
-        readonly int[] _drops = new int[3];
+        readonly int[] _drops = new int[QualityTier.Max + 1];
 
         float _sTime;
         int _sFrames;
@@ -112,6 +127,9 @@ namespace Ion.Presentation.Quality
         int _origMsaa = 4;
         float _origShadowDistance = 60f;
         int _origShadowRes = 2048;
+        int _origCascades = 1;
+        float _origSplit = 0.25f;
+        bool _origHdr;
 
         /// <summary>True while Auto is still measuring the first tier.</summary>
         public bool IsCalibrating => _phase == Phase.Calibrate || (_phase == Phase.Settle && _afterSettle == Phase.Calibrate);
@@ -171,6 +189,9 @@ namespace Ion.Presentation.Quality
             _urp.msaaSampleCount = _origMsaa;
             _urp.shadowDistance = _origShadowDistance;
             _urp.mainLightShadowmapResolution = _origShadowRes;
+            _urp.shadowCascadeCount = _origCascades;
+            _urp.cascade2Split = _origSplit;
+            _urp.supportsHDR = _origHdr;
         }
 
         void OnApplicationFocus(bool focused)
@@ -261,6 +282,15 @@ namespace Ion.Presentation.Quality
             _winFrames = 0;
 
             int tier = QualityTier.Current;
+            if (tier >= QualityTier.Ultra)
+            {
+                if (avg > UltraDownMs)
+                {
+                    _drops[tier]++;
+                    StepTo(QualityTier.High, Phase.Monitor);
+                }
+                return;
+            }
             if (avg > MonitorDownMs && tier > QualityTier.Low)
             {
                 _drops[tier]++;
@@ -269,6 +299,19 @@ namespace Ion.Presentation.Quality
             }
 
             bool scaleMaxed = !DynamicResolutionEnabled || _scale >= k_Tiers[tier].Scale - 0.001f;
+            if (tier == QualityTier.High)
+            {
+                // Ultra only on a clearly strong machine, and never again once Auto had to leave it.
+                if (avg < UltraUpMs && scaleMaxed && _drops[QualityTier.Ultra] == 0)
+                {
+                    if (++_upStreak >= UltraUpWindows) StepTo(QualityTier.Ultra, Phase.Monitor);
+                }
+                else
+                {
+                    _upStreak = 0;
+                }
+                return;
+            }
             if (avg < TierUpMs && tier < QualityTier.High && scaleMaxed && _drops[tier + 1] <= MaxDropsBeforeNoReturn)
             {
                 if (++_upStreak >= TierUpWindows) StepTo(tier + 1, Phase.Monitor);
@@ -371,10 +414,21 @@ namespace Ion.Presentation.Quality
                 if (!Mathf.Approximately(urp.shadowDistance, t.ShadowDistance)) urp.shadowDistance = t.ShadowDistance;
                 int res = t.ShadowRes <= 0 ? _origShadowRes : Mathf.Min(t.ShadowRes, Mathf.Max(_origShadowRes, MaxShadowRes()));
                 if (urp.mainLightShadowmapResolution != res) urp.mainLightShadowmapResolution = res;
+                int cascades = Mathf.Max(1, t.Cascades);
+                if (urp.shadowCascadeCount != cascades) urp.shadowCascadeCount = cascades;
+                if (cascades == 2 && !Mathf.Approximately(urp.cascade2Split, UltraCascadeSplit)) urp.cascade2Split = UltraCascadeSplit;
+                // HDR only where bloom runs (Ultra) and only when the GPU can render to half-float targets.
+                bool hdr = t.Hdr && SupportsHdrTargets();
+                if (urp.supportsHDR != hdr) urp.supportsHDR = hdr;
             }
             SetScale(scale);
             EnsureSunShadows(tier);
         }
+
+        /// <summary>True when the GPU renders to half-float targets (WebGL2: EXT_color_buffer_half_float / float).</summary>
+        public static bool SupportsHdrTargets() =>
+            SystemInfo.IsFormatSupported(UnityEngine.Experimental.Rendering.GraphicsFormat.R16G16B16A16_SFloat,
+                                         UnityEngine.Experimental.Rendering.GraphicsFormatUsage.Render);
 
         /// <summary>Largest shadow map the device takes (WebGL2 only guarantees 2048).</summary>
         static int MaxShadowRes() => SystemInfo.maxTextureSize >= 8192 ? 4096 : 2048;
@@ -399,6 +453,9 @@ namespace Ion.Presentation.Quality
                 _origMsaa = urp.msaaSampleCount;
                 _origShadowDistance = urp.shadowDistance;
                 _origShadowRes = urp.mainLightShadowmapResolution;
+                _origCascades = urp.shadowCascadeCount;
+                _origSplit = urp.cascade2Split;
+                _origHdr = urp.supportsHDR;
             }
             return urp;
         }

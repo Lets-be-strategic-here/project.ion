@@ -1,4 +1,5 @@
 using Ion.Gameplay;
+using Ion.Presentation.Motion;
 using Ion.Projection;
 using UnityEngine;
 using UnityEngine.UI;
@@ -10,12 +11,15 @@ namespace Ion.Presentation
     ///  * Lowered: the selected inventory photo rests small in the bottom-right corner ("in hand").
     ///  * Raised (Show): the inner image is sized to the exact screen footprint of the photo frustum
     ///    at the player camera, rotated by the roll, slightly translucent so it can be aligned
-    ///    with the world behind it. Raising slides it up from the bottom with an ease-out; lowering
-    ///    plays the same motion backwards.
-    ///  * The Polaroid lags a little behind mouse look and walks with the head bob (it settles exactly on
-    ///    the frustum footprint when the view is still, so alignment is unaffected).
-    ///  * When ProjectionSystem.Placed fires, the frame scales out past the screen edges while the image
-    ///    fades: the photo "becomes" the world (the flash itself is <see cref="ScreenFx"/>).
+    ///    with the world behind it. Raising rides a spring (2.6 Hz, ζ 0.82: ≈ 0.34 s, a 2 % settle) with
+    ///    the −7° in-hand tilt easing out; lowering is a quicker 0.26 s easeInOutCubic. Both interruptible.
+    ///  * Q/E: rotation is continuous and eased in PhotoHolder; the card is drawn at exactly that roll (the
+    ///    placement uses the same number). Only the raise's −7° in-hand tilt rides a spring on top, and it
+    ///    has settled to 0 by the time Place is enabled.
+    ///  * The Polaroid lags behind mouse look on a 1.8 Hz spring (max 12 px) and walks with the head bob; it
+    ///    settles exactly on the frustum footprint when the view is still, so alignment is unaffected.
+    ///  * Place (art bible §9.1): LMB presses the card in (0.10 s, scale 0.985); at the world swap the card
+    ///    scales to 1.08 and fades (0.30 s easeOutQuart) while ScreenFx flashes Frost.
     ///  * The controls hint stays upright whatever the roll: on the bottom border when the photo is
     ///    upright, otherwise under / beside the rotated frame in a small pill.
     /// </summary>
@@ -29,10 +33,10 @@ namespace Ion.Presentation
         public bool ShowLoweredPreview = true;
         /// <summary>Lowered preview height as a fraction of the screen height.</summary>
         public float LoweredHeightFraction = 0.2f;
-        /// <summary>Seconds for the raise / lower animation.</summary>
-        public float RaiseSeconds = 0.2f;
-        /// <summary>Seconds for the place "scale out" animation.</summary>
-        public float PlaceSeconds = 0.24f;
+        /// <summary>Legacy (raise timing now comes from Feel's springs).</summary>
+        public float RaiseSeconds = Feel.RaiseSeconds;
+        /// <summary>Seconds for the place card scale-out.</summary>
+        public float PlaceSeconds = Feel.PlaceCardSeconds;
 
         public bool IsShown => _raised;
 
@@ -62,12 +66,18 @@ namespace Ion.Presentation
         float _shownRoll;
 
         PhotoData _display;        // photo currently on the Polaroid
-        float _t;                  // 0 = lowered pose, 1 = raised pose (linear in time)
+        float _t;                  // 0 = lowered pose, 1 = raised pose (spring / ease driven)
+        float _tVel;               // raise spring velocity
+        float _lowerFrom = -1f;    // >= 0 while lowering: the pose value the lowering started from
+        float _lowerT;
+        float _rollVel;
+        float _tilt, _tiltVel;     // raised: offset from the logical roll (the in-hand tilt easing out)
         float _vis;                // overall visibility
         float _placeT = -1f;       // >= 0 while the place animation runs
+        float _pressT = -1f;       // >= 0 while the place press-in runs
 
         // Sway (look lag) and bob, in canvas units.
-        Vector2 _sway;
+        Vector2 _sway, _swayVel;
         float _lastYaw, _lastPitch;
         bool _haveLook;
 
@@ -109,8 +119,14 @@ namespace Ion.Presentation
                     // Different photo than the one in hand: swap now, start from the lowered pose.
                     SetDisplay(p);
                     _t = 0f;
+                    _tVel = 0f;
                     _shownRoll = LoweredTilt;
+                    _rollVel = 0f;
                 }
+                _lowerFrom = -1f;
+                // Whatever the card shows now eases onto the logical roll.
+                _tilt = Mathf.DeltaAngle(roll, _shownRoll);
+                _tiltVel = _rollVel;
             }
             _targetRoll = roll;
         }
@@ -118,9 +134,21 @@ namespace Ion.Presentation
         /// <summary>Lower the photo back into the hand (or hide it if nothing is selected).</summary>
         public void Hide()
         {
+            if (_raised)
+            {
+                _lowerFrom = _t;
+                _lowerT = 0f;
+            }
             _raised = false;
             _raisedPhoto = null;
             _suppressed = null;
+            _pressT = -1f;
+        }
+
+        /// <summary>LMB on a raised photo: the card presses in (0.10 s, easeOutQuad) before the world swaps.</summary>
+        public void PressIn()
+        {
+            if (_raised) _pressT = 0f;
         }
 
         /// <summary>Controls line shown with the raised Polaroid (null hides it).</summary>
@@ -149,14 +177,17 @@ namespace Ion.Presentation
         void OnPlaced()
         {
             // The world now matches the photo: the frame scales out past the screen edges and fades.
+            _pressT = -1f;
             if (_display == null || _vis < 0.05f || _t < 0.5f)
             {
                 _vis = 0f;
                 _t = 0f;
+                _tVel = 0f;
                 _display = null;
                 return;
             }
             _placeT = 0f;
+            _lowerFrom = -1f;
         }
 
         void EndPlaceAnimation()
@@ -164,20 +195,20 @@ namespace Ion.Presentation
             _placeT = -1f;
             _vis = 0f;
             _t = 0f;
+            _tVel = 0f;
+            _lowerFrom = -1f;
             _display = null;
             _frame.color = FrameColor;
             _shadow.enabled = true;
         }
 
-        static readonly Color FrameColor = new Color32(0xFD, 0xFB, 0xF6, 0xFF);
+        static readonly Color FrameColor = UIPalette.Frost;
 
         // ---------------------------------------------------------------- update
 
-        static float EaseOutCubic(float t) { t = 1f - Mathf.Clamp01(t); return 1f - t * t * t; }
-
         void LateUpdate()
         {
-            float dt = Time.unscaledDeltaTime;
+            float dt = Mathf.Min(Time.unscaledDeltaTime, 0.05f);
             FindDependencies();
             UpdateSway(dt);
 
@@ -204,7 +235,7 @@ namespace Ion.Presentation
                 ? (_raisedPhoto == _suppressed ? null : _raisedPhoto)
                 : (ShowLoweredPreview && !cameraOut ? SelectedPhoto() : null);
 
-            float speed = 1f / Mathf.Max(0.01f, RaiseSeconds);
+            float speed = 1f / Feel.LowerSeconds;
             if (desired != _display)
             {
                 // Fade the old one out quickly, then swap.
@@ -212,7 +243,7 @@ namespace Ion.Presentation
                 if (_vis <= 0.001f)
                 {
                     SetDisplay(desired);
-                    _t = _raised ? _t : 0f;
+                    if (!_raised) { _t = 0f; _tVel = 0f; _lowerFrom = -1f; }
                 }
             }
             else
@@ -220,8 +251,40 @@ namespace Ion.Presentation
                 _vis = Mathf.MoveTowards(_vis, desired != null ? 1f : 0f, dt * speed);
             }
 
-            _t = Mathf.MoveTowards(_t, _raised ? 1f : 0f, dt * speed);
-            _shownRoll = Mathf.MoveTowardsAngle(_shownRoll, _raised ? _targetRoll : LoweredTilt, dt * 900f);
+            if (_raised)
+            {
+                // Raise: a spring (interruptible; continues from wherever the card is).
+                Spring.Step(ref _t, ref _tVel, 1f, Feel.RaiseFreq, Feel.RaiseZeta, dt);
+            }
+            else if (_lowerFrom >= 0f)
+            {
+                // Lower: exits faster than it enters (easeInOutCubic from the current pose).
+                _lowerT += dt;
+                float k = Ease.InOutCubic(_lowerT / Feel.LowerSeconds);
+                _t = _lowerFrom * (1f - k);
+                _tVel = 0f;
+                if (_lowerT >= Feel.LowerSeconds) { _t = 0f; _lowerFrom = -1f; }
+            }
+            else
+            {
+                _t = Mathf.MoveTowards(_t, 0f, dt * speed);
+                _tVel = 0f;
+            }
+            // Roll: raised, the card is drawn at the exact logical roll plus the in-hand tilt easing to 0;
+            // lowered, it springs back to the −7° in-hand tilt.
+            if (_raised)
+            {
+                Spring.Step(ref _tilt, ref _tiltVel, 0f, Feel.RotateTiltFreq, Feel.RaiseTiltZeta, dt);
+                if (Mathf.Abs(_tilt) < 0.005f && Mathf.Abs(_tiltVel) < 0.05f) { _tilt = 0f; _tiltVel = 0f; }
+                float prev = _shownRoll;
+                _shownRoll = _targetRoll + _tilt;
+                _rollVel = dt > 0f ? Mathf.DeltaAngle(prev, _shownRoll) / dt : 0f;
+            }
+            else
+            {
+                Spring.StepAngle(ref _shownRoll, ref _rollVel, LoweredTilt, Feel.RotateTiltFreq, Feel.RaiseTiltZeta, dt);
+            }
+            if (_pressT >= 0f) _pressT += dt;
 
             _group.alpha = _vis;
             bool visible = _vis > 0.001f && _display != null;
@@ -236,24 +299,31 @@ namespace Ion.Presentation
             Layout();
         }
 
-        /// <summary>Look lag: the Polaroid trails the view a little and springs back.</summary>
+        /// <summary>
+        /// Look lag: the Polaroid trails the view on a 1.8 Hz spring (ζ 0.75), at most 12 px, and settles back
+        /// exactly on the footprint. Off with reduced motion.
+        /// </summary>
         void UpdateSway(float dt)
         {
             var fpc = FirstPersonController.Current;
-            if (fpc == null) { _haveLook = false; return; }
+            if (fpc == null || Feel.ReducedMotion) { _haveLook = false; _sway = _swayVel = Vector2.zero; return; }
             float yaw = fpc.Yaw, pitch = fpc.Pitch;
-            if (_haveLook)
+            if (_haveLook && dt > 0f)
             {
                 float dYaw = Mathf.DeltaAngle(_lastYaw, yaw);
                 float dPitch = pitch - _lastPitch;
                 if (Mathf.Abs(dYaw) < 25f && Mathf.Abs(dPitch) < 25f) // ignore teleports / snaps
-                    _sway += new Vector2(-dYaw, dPitch) * 2.4f;
+                    _swayVel += new Vector2(-dYaw, dPitch) * 36f; // look speed pushes the card the other way
             }
             _lastYaw = yaw;
             _lastPitch = pitch;
             _haveLook = true;
-            _sway = Vector2.ClampMagnitude(_sway, 42f);
-            _sway *= Mathf.Exp(-dt * 10f);
+            Spring.Step(ref _sway, ref _swayVel, Vector2.zero, Feel.SwayFreq, Feel.SwayZeta, dt);
+            if (_sway.magnitude > Feel.SwayMaxPx)
+            {
+                _sway = _sway.normalized * Feel.SwayMaxPx;
+                _swayVel *= 0.5f;
+            }
         }
 
         void Layout()
@@ -290,13 +360,14 @@ namespace Ion.Presentation
             Vector2 lowPos = new Vector2(screenW * 0.5f - lowW * 0.5f - screenW * 0.05f,
                                          -screenH * 0.5f + lowH * 0.5f + BottomBorder * lowScale + screenH * 0.06f);
 
-            // Ease-out raise; lowering plays the same curve backwards. A shallow dip on the way makes it
-            // read as coming up from below the screen edge.
-            float e = EaseOutCubic(_t);
-            float sx = Mathf.Lerp(lowScale, raisedScaleX, e);
-            float sy = Mathf.Lerp(lowScale, raisedScale, e);
-            Vector2 pos = Vector2.Lerp(lowPos, Vector2.zero, e);
-            pos.y -= Mathf.Sin(e * Mathf.PI) * screenH * 0.07f;
+            // The spring value is the pose (it may overshoot a hair: the 2 % settle). A shallow dip on the way
+            // makes it read as coming up from below the screen edge.
+            float e = _t;
+            float sx = Mathf.LerpUnclamped(lowScale, raisedScaleX, e);
+            float sy = Mathf.LerpUnclamped(lowScale, raisedScale, e);
+            Vector2 pos = Vector2.LerpUnclamped(lowPos, Vector2.zero, e);
+            pos.y -= Mathf.Sin(Mathf.Clamp01(e) * Mathf.PI) * screenH * 0.05f;
+            e = Mathf.Clamp01(e);
 
             // Look lag + walk bob (stronger in hand than held up).
             Vector2 bob = fpc != null ? fpc.BobSignal : Vector2.zero;
@@ -307,14 +378,22 @@ namespace Ion.Presentation
 
             float roll = _shownRoll + rollSway;
             float placeAlpha = 1f;
+            if (_pressT >= 0f)
+            {
+                // Press-in: 1 → 0.985 over 0.10 s (easeOutQuad).
+                float press = Mathf.Lerp(1f, Feel.PlacePressScale, Ease.OutQuad(_pressT / Feel.PlacePressSeconds));
+                sx *= press;
+                sy *= press;
+            }
             if (_placeT >= 0f)
             {
-                // Scale out to fill the screen while the image fades into the (now identical) world.
+                // The card lets go: 0.985 → 1.08 while it fades (easeOutQuart); the world is already the photo.
                 float k = Mathf.Clamp01(_placeT / PlaceSeconds);
-                float grow = 1f + 0.85f * EaseOutCubic(k);
+                float q = Ease.OutQuart(k);
+                float grow = Mathf.Lerp(Feel.PlacePressScale, Feel.PlaceCardScale, q);
                 sx *= grow;
                 sy *= grow;
-                placeAlpha = 1f - k * k;
+                placeAlpha = 1f - q;
                 roll = _shownRoll;
             }
 
@@ -324,7 +403,7 @@ namespace Ion.Presentation
 
             var c = _image.color;
             float a = _display.Preview != null ? Mathf.Lerp(1f, RaisedImageAlpha, e) : 1f;
-            if (_placeT >= 0f) a = RaisedImageAlpha * Mathf.Clamp01(1f - _placeT / (PlaceSeconds * 0.6f));
+            if (_placeT >= 0f) a = RaisedImageAlpha * (1f - Ease.OutQuart(_placeT / (PlaceSeconds * 0.7f)));
             if (!Mathf.Approximately(c.a, a))
             {
                 c.a = a;
@@ -336,11 +415,11 @@ namespace Ion.Presentation
                 fc.a = placeAlpha;
                 _frame.color = fc;
                 _shadow.enabled = false;
-                _caption.color = UIUtil.WithAlpha(Palette.Slate, placeAlpha);
+                _caption.color = UIUtil.WithAlpha(UIPalette.GraphiteSoft, placeAlpha);
             }
             else if (_caption.color.a < 1f)
             {
-                _caption.color = Palette.Slate;
+                _caption.color = UIPalette.GraphiteSoft;
             }
 
             // Bounds of the whole frame (border included), for the hint and the HUD toast.
@@ -390,14 +469,17 @@ namespace Ion.Presentation
                 _hint.text = text;
                 if (mode == 0)
                 {
+                    // On the Polaroid's own border: Graphite text, Brass brackets.
+                    text = text.Replace("#9FE3FFB3", "#C59A45");
+                    _hint.text = text;
                     _hintPill.color = new Color(0f, 0f, 0f, 0f);
-                    _hint.color = UIUtil.WithAlpha(Palette.Slate, 0.85f);
+                    _hint.color = UIUtil.WithAlpha(UIPalette.Graphite, 0.85f);
                     _hint.alignment = TextAnchor.MiddleCenter;
                 }
                 else
                 {
-                    _hintPill.color = UIUtil.WithAlpha(Palette.Ink, 0.62f);
-                    _hint.color = Palette.Cream;
+                    _hintPill.color = UIUtil.WithAlpha(UIPalette.Graphite, 0.72f);
+                    _hint.color = UIPalette.Paper;
                     _hint.alignment = mode == 2 ? TextAnchor.MiddleLeft : TextAnchor.MiddleCenter;
                 }
                 _hint.fontSize = mode == 0 ? 18 : 19;
@@ -482,7 +564,7 @@ namespace Ion.Presentation
             float aspect = PhotoAspect(p);
             _holder.sizeDelta = new Vector2(RefHeight * aspect, RefHeight);
             _image.texture = p.Preview;
-            _image.color = p.Preview != null ? Color.white : Palette.Sky;
+            _image.color = p.Preview != null ? Color.white : UIPalette.Frost;
             _caption.text = string.IsNullOrEmpty(p.Label) ? "" : p.Label;
         }
 
@@ -502,7 +584,7 @@ namespace Ion.Presentation
             _holder.sizeDelta = new Vector2(RefHeight * 4f / 3f, RefHeight);
 
             // Drop shadow.
-            _shadow = UIUtil.NewImage("Shadow", _holder, new Color(0.10f, 0.10f, 0.20f, 0.22f), UIUtil.RoundedSprite, true);
+            _shadow = UIUtil.NewImage("Shadow", _holder, UIUtil.WithAlpha(UIPalette.Cyanotype, 0.2f), UIUtil.RoundedSprite, true);
             var srt = _shadow.rectTransform;
             srt.anchorMin = Vector2.zero;
             srt.anchorMax = Vector2.one;
@@ -532,7 +614,7 @@ namespace Ion.Presentation
             ert.sizeDelta = new Vector2(0f, 3f);
 
             // Hand-written-ish caption on the bottom strip.
-            _caption = UIUtil.NewText("Caption", _holder, "", 36, Palette.Slate, TextAnchor.MiddleCenter, FontStyle.Italic, false);
+            _caption = UIUtil.NewText("Caption", _holder, "", 36, UIPalette.GraphiteSoft, TextAnchor.MiddleCenter, FontStyle.Italic, false);
             var crt = _caption.rectTransform;
             crt.anchorMin = new Vector2(0f, 0f);
             crt.anchorMax = new Vector2(1f, 0f);
@@ -547,7 +629,7 @@ namespace Ion.Presentation
             _hintRoot = _hintPill.rectTransform;
             _hintRoot.anchorMin = _hintRoot.anchorMax = new Vector2(0.5f, 0.5f);
             _hintRoot.pivot = new Vector2(0.5f, 0.5f);
-            _hint = UIUtil.NewText("Text", _hintRoot, "", 18, UIUtil.WithAlpha(Palette.Slate, 0.85f), TextAnchor.MiddleCenter, FontStyle.Bold, false);
+            _hint = UIUtil.NewText("Text", _hintRoot, "", 18, UIUtil.WithAlpha(UIPalette.Graphite, 0.85f), TextAnchor.MiddleCenter, FontStyle.Bold, false);
             UIUtil.Stretch(_hint.rectTransform);
             _hint.rectTransform.offsetMin = new Vector2(18f, 0f);
             _hint.rectTransform.offsetMax = new Vector2(-18f, 0f);

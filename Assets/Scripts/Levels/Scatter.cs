@@ -9,7 +9,11 @@ namespace Ion.Levels
     /// per-room seed and then tested against each root (world and diorama) with raycasts, so wherever
     /// the two share terrain they get exactly the same dressing, and a photo pasted over the world
     /// lines up. Everything is tagged <see cref="Decor"/> and merged by <see cref="DecorCombiner"/>.
+    ///
+    /// DEPRECATED (art bible §10): grass-island dressing for the legacy rooms; its tufts are PropKit grass now.
+    /// The Light Table zones are dressed by hand with PropKit planters and plants.
     /// </summary>
+    [System.Obsolete("Legacy island dressing: dress zones with Ion.Levels.Props.PropKit planters and plants.")]
     public static class Scatter
     {
         struct Candidate

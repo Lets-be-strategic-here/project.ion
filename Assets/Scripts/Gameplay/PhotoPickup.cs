@@ -1,4 +1,5 @@
 using System.Collections.Generic;
+using Ion.Gameplay.State;
 using Ion.Presentation;
 using Ion.Projection;
 using UnityEngine;
@@ -37,7 +38,11 @@ namespace Ion.Gameplay
         float _phase;
 
         [RuntimeInitializeOnLoadMethod(RuntimeInitializeLoadType.SubsystemRegistration)]
-        static void ResetStatics() => s_Active.Clear();
+        static void ResetStatics()
+        {
+            s_Active.Clear();
+            s_TaughtRaise = false;
+        }
 
         /// <summary>World position used for range checks and the prompt (the photo itself).</summary>
         public Vector3 FocusPoint => transform.position + Vector3.up * VisualHeight;
@@ -90,7 +95,7 @@ namespace Ion.Gameplay
             ring.transform.localPosition = new Vector3(0f, 0.015f, 0f);
             ring.AddComponent<MeshFilter>().sharedMesh = RingMesh;
             var rr = ring.AddComponent<MeshRenderer>();
-            rr.sharedMaterial = Palette.GetEmissive(Palette.Butter, 0.9f);
+            rr.sharedMaterial = Palette.GetEmissive(UIPalette.Ion, 0.8f); // ion = "use me"
             rr.shadowCastingMode = UnityEngine.Rendering.ShadowCastingMode.Off;
             _ring = ring.transform;
 
@@ -111,7 +116,7 @@ namespace Ion.Gameplay
             frame.transform.SetParent(root, false);
             frame.transform.localScale = new Vector3(photoW + border * 2f, photoH + border + bottom, thickness);
             frame.transform.localPosition = new Vector3(0f, -(bottom - border) * 0.5f, 0f);
-            frame.GetComponent<Renderer>().sharedMaterial = Palette.Get(Palette.Cream);
+            frame.GetComponent<Renderer>().sharedMaterial = Palette.Get(UIPalette.Paper);
 
             Material faceMat = CreatePhotoMaterial();
             for (int side = 0; side < 2; side++)
@@ -133,7 +138,7 @@ namespace Ion.Gameplay
             var shader = Shader.Find(PhotoShaderName);
             Texture2D tex = Photo != null ? Photo.Preview : null;
             if (shader == null || tex == null)
-                return Palette.Get(Palette.Sky);
+                return Palette.Get(UIPalette.Frost);
 
             _photoMaterial = new Material(shader) { name = "PickupPhoto" };
             if (_photoMaterial.HasProperty("_MainTex")) _photoMaterial.SetTexture("_MainTex", tex);
@@ -222,16 +227,16 @@ namespace Ion.Gameplay
             if (Animate && _visual != null)
             {
                 float t = Time.time + _phase;
-                _visual.localPosition = new Vector3(0f, VisualHeight + Mathf.Sin(t * 2f) * 0.05f, 0f);
-                _visual.localRotation = Quaternion.Euler(-12f, t * 40f, 0f);
+                // A slow float with a gentle sway (no spinning: it reads as a print, not a power-up).
+                _visual.localPosition = new Vector3(0f, VisualHeight + Mathf.Sin(t * 1.6f) * 0.03f, 0f);
+                _visual.localRotation = Quaternion.Euler(-15f, Mathf.Sin(t * 0.7f) * 12f, 0f);
             }
             if (Animate && _ring != null)
             {
                 // Slow breathing glow.
                 float t = Time.time + _phase;
-                float s = 1f + 0.12f * (0.5f + 0.5f * Mathf.Sin(t * 2.4f));
+                float s = 1f + 0.06f * (0.5f + 0.5f * Mathf.Sin(t * 2.0f));
                 _ring.localScale = new Vector3(s, 1f, s);
-                _ring.localRotation = Quaternion.Euler(0f, -t * 25f, 0f);
             }
 
             // Fallback for touch collection (independent of physics trigger callbacks).
@@ -246,26 +251,44 @@ namespace Ion.Gameplay
                 Collect(player.GetComponent<PhotoInventory>());
         }
 
-        /// <summary>Puts the photo back where it was (game restart).</summary>
+        /// <summary>Puts the photo back where it was (rewind, checkpoint restore, game restart).</summary>
         public void ResetPickup()
         {
             Collected = false;
             gameObject.SetActive(true);
         }
 
-        /// <summary>Adds the photo to the inventory, toasts, and disables the pickup.</summary>
+        static bool s_TaughtRaise;
+
+        /// <summary>
+        /// Adds the photo to the inventory (it lifts and flies into its HUD slot), records a rewindable
+        /// change and disables the pickup.
+        /// </summary>
         public bool Collect(PhotoInventory inventory)
         {
             if (Collected || inventory == null) return false;
             Collected = true;
 
-            if (Photo != null)
+            if (Photo != null && !inventory.Contains(Photo))
             {
+                PlayerPose safe = WorldHistory.SafePoseNow();
                 inventory.Add(Photo);
+                var history = WorldHistory.Instance;
+                if (history != null)
+                {
+                    history.Push(new PickupChange
+                    {
+                        Pickup = this,
+                        Photo = Photo,
+                        Index = inventory.IndexOf(Photo),
+                        Inventory = inventory,
+                        SafePose = safe,
+                    });
+                }
                 GameplayUI.PhotoCollected(Photo, FocusPoint);
-                GameplayUI.Toast(string.IsNullOrEmpty(Photo.Label)
-                    ? "Picked up a photo"
-                    : "Picked up photo: " + Photo.Label);
+                string label = string.IsNullOrEmpty(Photo.Label) ? "Photo" : Photo.Label;
+                GameplayUI.Toast(s_TaughtRaise ? label : label + "   " + UIUtil.Key("SHIFT") + " hold it up");
+                s_TaughtRaise = true;
             }
             else
             {

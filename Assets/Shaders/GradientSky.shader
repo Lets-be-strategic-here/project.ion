@@ -47,6 +47,8 @@ Shader "Ion/GradientSky"
                 half _SunSize;
                 half _SunHalo;
             CBUFFER_END
+            // Ultra tier (UltraFx): w = HDR glow gain (0 elsewhere).
+            float4 _IonUltraFx;
 
             struct Attributes
             {
@@ -92,6 +94,7 @@ Shader "Ion/GradientSky"
 
                 // Sun disc (+ the material halo when the globals are missing) towards the main light.
                 float3 sunDir = _MainLightPosition.xyz;
+                float sunCore = 0.0;
                 if (dot(sunDir, sunDir) > 0.0001)
                 {
                     // float: pow(d, ~600) needs full precision near d = 1.
@@ -100,9 +103,13 @@ Shader "Ion/GradientSky"
                     float glow = pow(d, (float)_SunSize) + halo;
                     // Blended towards the warm disc colour (adding it clipped the core to cool white).
                     col = lerp(col, _SunColor.rgb, saturate((half)glow * saturate(y * 4.0h + 0.5h)));
+                    sunCore = saturate(pow(d, (float)_SunSize * 0.5)) * saturate(y * 4.0 + 0.5);
                 }
 
-                return half4(IonGrade(col, input.positionCS.xy), 1.0h);
+                half3 graded = IonGrade(col, input.positionCS.xy);
+                // Ultra (HDR + bloom): the sun disc goes past 1 so it, and only it in the sky, blooms.
+                graded *= 1.0h + (half)(sunCore * _IonUltraFx.w * 1.5);
+                return half4(graded, 1.0h);
             }
             ENDHLSL
         }

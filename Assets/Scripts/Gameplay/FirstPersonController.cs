@@ -1,12 +1,19 @@
+using System;
+using Ion.Gameplay.State;
+using Ion.Presentation.Motion;
 using UnityEngine;
 using UnityEngine.InputSystem;
 
 namespace Ion.Gameplay
 {
     /// <summary>
-    /// CharacterController-based first-person movement: WASD/arrows, Shift to sprint, Space to jump,
-    /// mouse look (pointer locked). Mouse delta is scaled by sensitivity only, never by deltaTime.
-    /// Falling below <see cref="KillY"/> respawns at the last checkpoint (nearest <see cref="PlayerSpawn"/> reached).
+    /// CharacterController-based first-person movement: WASD/arrows, Space to jump, mouse look while the
+    /// pointer is locked (see <see cref="PointerLock"/> / <see cref="IonInput"/>). There is no sprint: Shift
+    /// raises the photo. Mouse delta is scaled by sensitivity only, never by deltaTime.
+    /// Falling is handled by <see cref="SafePoseTracker"/> + <see cref="RewindController"/> (R recovers; limbo
+    /// recovers by itself); below <see cref="KillY"/> the recovery happens at once.
+    /// View feel (art bible §9.1): head bob 0.015 m / 2.3 m stride, a landing-dip spring and FOV springs
+    /// (place kick, teleport swell). Reduced motion turns all of them off.
     /// </summary>
     [DisallowMultipleComponent]
     [RequireComponent(typeof(CharacterController))]
@@ -69,7 +76,6 @@ namespace Ion.Gameplay
 
         [Header("Movement")]
         public float WalkSpeed = 4.5f;
-        public float SprintSpeed = 6.75f;
         public float GroundAcceleration = 45f;
         public float AirAcceleration = 12f;
         public float Gravity = 24f;
@@ -82,13 +88,14 @@ namespace Ion.Gameplay
         public float MaxPitch = 85f;
 
         [Header("Safety")]
+        /// <summary>Below this height the fall recovery happens at once (no limbo wait).</summary>
         public float KillY = -40f;
 
         [Header("Feel")]
         /// <summary>Vertical bob amplitude (m) at walking speed; sideways sway is about half.</summary>
-        public float BobHeight = 0.022f;
+        public float BobHeight = Feel.HeadBobAmplitude;
         /// <summary>Metres walked per full bob cycle (two footsteps).</summary>
-        public float BobStride = 2.3f;
+        public float BobStride = Feel.HeadBobStride;
 
         Camera _camera;
         CharacterController _cc;
@@ -99,20 +106,20 @@ namespace Ion.Gameplay
         float _verticalVelocity;
         float _lastGroundedTime = -10f;
         float _jumpPressedTime = -10f;
-
-        bool _wasLocked;
-        int _skipLookFrames;
+        float _fallLimit = -1f;
 
         Vector3 _checkpointPosition;
         float _checkpointYaw;
         float _nextCheckpointScan;
 
-        // View feel: head bob, landing dip and an FOV punch (camera-local; never moves the body).
+        // View feel: head bob, landing dip and FOV springs (camera-local; never moves the body).
         Vector3 _eyeLocal = new Vector3(0f, 1.62f, 0f);
         float _baseFov = 70f;
         float _bobPhase, _bobAmount;
         float _dip, _dipVelocity;
         float _fovKick, _fovKickVelocity;
+        float _fovFreq = Feel.PlaceFovFreq, _fovZeta = Feel.PlaceFovZeta;
+        float _fovHold = float.NaN;
         bool _wasGrounded = true;
         float _fallSpeed;
 
@@ -125,7 +132,7 @@ namespace Ion.Gameplay
 
         public Camera Camera => _camera;
 
-        /// <summary>Field of view without the transient FOV punch.</summary>
+        /// <summary>Field of view without the transient FOV springs.</summary>
         public float BaseFieldOfView => _baseFov;
 
         /// <summary>Current camera offset from head bob + landing dip (camera-local metres).</summary>
@@ -133,6 +140,7 @@ namespace Ion.Gameplay
 
         /// <summary>Normalised walking bob (x = sideways, y = vertical, each -1..1, scaled by how much it is active).</summary>
         public Vector2 BobSignal { get; private set; }
+
         /// <summary>When false, movement/look/actions are ignored (gravity still applies).</summary>
         public bool InputEnabled
         {
@@ -144,6 +152,31 @@ namespace Ion.Gameplay
             }
         }
 
+        /// <summary>
+        /// Rewind in progress: no walking and no gravity (the body hangs exactly where it is), look still
+        /// works. Set by <see cref="RewindController"/>.
+        /// </summary>
+        public bool Frozen
+        {
+            get => _frozen;
+            set
+            {
+                _frozen = value;
+                if (value)
+                {
+                    _horizontalVelocity = Vector3.zero;
+                    _verticalVelocity = 0f;
+                }
+            }
+        }
+        bool _frozen;
+
+        /// <summary>Holds the view and the body still (the 0.10 s place press-in). Gravity still applies.</summary>
+        public bool HoldStill { get; set; }
+
+        /// <summary>Gravity multiplier (limbo eases it to 15 %).</summary>
+        public float GravityScale { get; set; } = 1f;
+
         public CharacterController Controller => _cc;
         public float Yaw => _yaw;
         public float Pitch => _pitch;
@@ -151,10 +184,13 @@ namespace Ion.Gameplay
         public Vector3 Velocity => _horizontalVelocity + Vector3.up * _verticalVelocity;
         public Vector3 CheckpointPosition => _checkpointPosition;
 
-        /// <summary>Fired after the player falls out of the world and is put back at the checkpoint.</summary>
-        public event System.Action Respawned;
+        /// <summary>Fired after the player was recovered from a fall (R, limbo timeout, last resort).</summary>
+        public event Action Respawned;
 
-        /// <summary>Number of times the player fell out of the world and was respawned.</summary>
+        /// <summary>Fired after <see cref="Teleport"/> (from, to feet positions); not for silent rewind moves.</summary>
+        public event Action<Vector3, Vector3> Teleported;
+
+        /// <summary>Number of times the player was recovered from a fall.</summary>
         public int RespawnCount { get; private set; }
 
         /// <summary>True while a <see cref="ScriptedWalk"/> / <see cref="ScriptedWalkTo"/> is in progress.</summary>
@@ -194,6 +230,7 @@ namespace Ion.Gameplay
         /// <summary>Sets the view (yaw in degrees, pitch in degrees, positive = looking down).</summary>
         public void SetLook(float yaw, float pitch)
         {
+            _nudgeT = _nudgeSeconds;
             _yaw = Mathf.Repeat(yaw, 360f);
             _pitch = Mathf.Clamp(pitch, -MaxPitch, MaxPitch);
             ApplyRotation();
@@ -211,11 +248,22 @@ namespace Ion.Gameplay
             ApplyRotation();
         }
 
-        void OnEnable() => Current = this;
+        void OnEnable()
+        {
+            Current = this;
+            PointerLock.FocusLost += OnFocusLost;
+        }
 
         void OnDisable()
         {
+            PointerLock.FocusLost -= OnFocusLost;
             if (Current == this) Current = null;
+        }
+
+        void OnFocusLost()
+        {
+            _horizontalVelocity = Vector3.zero;
+            _jumpPressedTime = -10f;
         }
 
         /// <summary>Used by <see cref="PlayerFactory"/>; normally the camera is found in Awake.</summary>
@@ -233,28 +281,67 @@ namespace Ion.Gameplay
             _baseFov = _camera.fieldOfView;
         }
 
-        /// <summary>A short field-of-view punch (degrees, positive = wider) that springs back.</summary>
-        public void PunchFov(float degrees)
+        // ---------------------------------------------------------------- FOV springs
+
+        /// <summary>Legacy: a place-style FOV kick (degrees, positive = wider) that springs back.</summary>
+        public void PunchFov(float degrees) => KickFov(degrees, Feel.PlaceFovFreq, Feel.PlaceFovZeta);
+
+        /// <summary>
+        /// An FOV impulse whose peak is about <paramref name="peakDegrees"/>, absorbed by a spring
+        /// (<paramref name="freqHz"/>, <paramref name="zeta"/>). Off with reduced motion.
+        /// </summary>
+        public void KickFov(float peakDegrees, float freqHz, float zeta)
         {
-            _fovKickVelocity += degrees * 18f;
+            if (Feel.ReducedMotion || !float.IsNaN(_fovHold)) return;
+            _fovFreq = freqHz;
+            _fovZeta = zeta;
+            _fovKickVelocity += ImpulseForPeak(peakDegrees, freqHz, zeta);
+        }
+
+        /// <summary>Holds the FOV offset at <paramref name="degrees"/> (the teleport swell, driven per frame).</summary>
+        public void SetFovHold(float degrees)
+        {
+            if (Feel.ReducedMotion) degrees = 0f;
+            _fovHold = degrees;
+            _fovKick = degrees;
+            _fovKickVelocity = 0f;
+        }
+
+        /// <summary>Lets go of <see cref="SetFovHold"/>: the offset springs back to 0.</summary>
+        public void ReleaseFovHold(float freqHz, float zeta)
+        {
+            _fovHold = float.NaN;
+            _fovFreq = freqHz;
+            _fovZeta = zeta;
+        }
+
+        /// <summary>Initial velocity that makes a spring at rest peak at <paramref name="peak"/>.</summary>
+        static float ImpulseForPeak(float peak, float freqHz, float zeta)
+        {
+            float w = 2f * Mathf.PI * Mathf.Max(0.01f, freqHz);
+            if (zeta >= 0.999f) return peak * w * Mathf.Exp(1f);      // critical: peak = v0 / (w e)
+            float s = Mathf.Sqrt(1f - zeta * zeta);
+            float phase = Mathf.Atan2(s, zeta);
+            float k = Mathf.Exp(-zeta / s * phase);                  // peak = v0 / w * k
+            return peak * w / Mathf.Max(1e-3f, k);
         }
 
         /// <summary>
-        /// Puts the camera back at its exact eye position and base FOV right now (no bob, dip or punch).
+        /// Puts the camera back at its exact eye position and base FOV right now (no bob, dip or springs).
         /// Called before anything uses the camera pose for gameplay (placing, capturing).
         /// </summary>
         public void ResetViewEffects()
         {
             _bobAmount = 0f;
             _dip = _dipVelocity = 0f;
-            _fovKick = _fovKickVelocity = 0f;
+            if (float.IsNaN(_fovHold)) _fovKick = _fovKickVelocity = 0f;
             ApplyViewEffects();
         }
 
         void UpdateViewEffects(float dt)
         {
             if (dt <= 0f) return;
-            bool on = HeadBobEnabled;
+            bool on = HeadBobEnabled && !Feel.ReducedMotion;
             bool grounded = _cc != null && _cc.isGrounded;
 
             // Bob: phase follows the distance walked; amplitude follows speed (and fades in the air).
@@ -262,22 +349,26 @@ namespace Ion.Gameplay
             hv.y = 0f;
             float speed = hv.magnitude;
             float target = on && grounded ? Mathf.Clamp01(speed / WalkSpeed) : 0f;
-            _bobAmount = Mathf.MoveTowards(_bobAmount, target, dt * (target > _bobAmount ? 4f : 6f));
+            _bobAmount = Mathf.MoveTowards(_bobAmount, target, dt * (target > _bobAmount ? 3f : 5f));
             _bobPhase = Mathf.Repeat(_bobPhase + speed * dt * (2f * Mathf.PI / Mathf.Max(0.5f, BobStride)), 2f * Mathf.PI);
-            if (_bobAmount < 1e-3f) _bobPhase = Mathf.MoveTowards(_bobPhase, _bobPhase < Mathf.PI ? 0f : 2f * Mathf.PI, dt * 6f);
+            if (_bobAmount < 1e-3f) _bobPhase = Mathf.MoveTowards(_bobPhase, _bobPhase < Mathf.PI ? 0f : 2f * Mathf.PI, dt * 4f);
 
-            // Landing dip: a damped spring kicked by the landing speed.
-            if (grounded && !_wasGrounded && on && _fallSpeed > 3f)
-                _dipVelocity += Mathf.Min((_fallSpeed - 2f) * 0.05f, 0.65f);
+            // Landing dip: depth 0.03 m per m/s above 4 m/s (max 0.09), on a soft spring.
+            if (grounded && !_wasGrounded && on && _fallSpeed > Feel.LandingMinSpeed)
+            {
+                float depth = Mathf.Min((_fallSpeed - Feel.LandingMinSpeed) * Feel.LandingDepthPerMps, Feel.LandingMaxDepth);
+                _dipVelocity += ImpulseForPeak(depth, Feel.LandingFreq, Feel.LandingZeta);
+            }
             _wasGrounded = grounded;
-            const float k = 140f, c = 17f;
-            _dipVelocity += (-k * _dip - c * _dipVelocity) * dt;
-            _dip = Mathf.Clamp(_dip + _dipVelocity * dt, -0.05f, 0.12f);
+            Spring.Step(ref _dip, ref _dipVelocity, 0f, Feel.LandingFreq, Feel.LandingZeta, dt);
+            _dip = Mathf.Clamp(_dip, -0.04f, Feel.LandingMaxDepth + 0.02f);
 
-            // FOV punch spring.
-            const float fk = 220f, fc = 24f;
-            _fovKickVelocity += (-fk * _fovKick - fc * _fovKickVelocity) * dt;
-            _fovKick = Mathf.Clamp(_fovKick + _fovKickVelocity * dt, -6f, 6f);
+            // FOV spring (held during a teleport swell).
+            if (float.IsNaN(_fovHold))
+            {
+                Spring.Step(ref _fovKick, ref _fovKickVelocity, 0f, _fovFreq, _fovZeta, dt);
+                _fovKick = Mathf.Clamp(_fovKick, -8f, 8f);
+            }
 
             ApplyViewEffects();
         }
@@ -294,77 +385,39 @@ namespace Ion.Gameplay
             if (!Mathf.Approximately(_camera.fieldOfView, fov)) _camera.fieldOfView = fov;
         }
 
+        // ---------------------------------------------------------------- frame
+
         void Update()
         {
             var kb = Keyboard.current;
-            var mouse = Mouse.current;
 
-            HandleCursor(kb, mouse);
-            HandleLook(mouse);
+            HandleLook();
             HandleMove(kb);
             UpdateViewEffects(Time.deltaTime);
             HandleCheckpoints();
 
-            // Falling out of the world: fade to white on the way down and respawn at the peak (hard
-            // fallback at KillY in case the fade cannot run).
-            float y = transform.position.y;
-            if (y < KillY)
+            // Hard floor: recover at once (the limbo wait is for falls above this).
+            if (transform.position.y < KillY && !_frozen)
             {
-                Respawn();
-            }
-            else if (y < KillY + RespawnFadeLead && _fadeRespawnToken == 0 && _verticalVelocity < 0f)
-            {
-                int token = ++_respawnSerial;
-                _fadeRespawnToken = token;
-                Ion.Presentation.ScreenFx.RunTransition(() =>
+                var tracker = GetComponent<SafePoseTracker>();
+                var history = WorldHistory.Instance;
+                if (tracker != null && history != null)
                 {
-                    if (this == null || _fadeRespawnToken != token) return;
+                    if (tracker.IsFalling || tracker.InLimbo) history.RewindOnce();
+                }
+                else
+                {
                     Respawn();
-                });
+                }
             }
         }
 
-        /// <summary>Metres above <see cref="KillY"/> at which the respawn fade starts.</summary>
-        const float RespawnFadeLead = 38f;
-        int _fadeRespawnToken, _respawnSerial;
-
-        void HandleCursor(Keyboard kb, Mouse mouse)
+        void HandleLook()
         {
-            if (kb != null && kb.escapeKey.wasPressedThisFrame)
-            {
-                Cursor.lockState = CursorLockMode.None;
-                Cursor.visible = true;
-            }
-            else if (_inputEnabled && mouse != null && mouse.leftButton.wasPressedThisFrame &&
-                     Cursor.lockState != CursorLockMode.Locked)
-            {
-                Cursor.lockState = CursorLockMode.Locked;
-                Cursor.visible = false;
-            }
-
-            bool locked = Cursor.lockState == CursorLockMode.Locked;
-            if (locked != _wasLocked)
-            {
-                // Browsers often report a large bogus delta right after pointer lock changes.
-                _skipLookFrames = 2;
-                _wasLocked = locked;
-            }
-        }
-
-        void HandleLook(Mouse mouse)
-        {
-            if (!_inputEnabled || mouse == null || Cursor.lockState != CursorLockMode.Locked)
-                return;
-
-            if (_skipLookFrames > 0)
-            {
-                _skipLookFrames--;
-                return;
-            }
-
-            Vector2 delta = mouse.delta.ReadValue() * MouseSensitivity; // NOT * deltaTime
-            if (delta.sqrMagnitude < 1e-8f) return;
-
+            if (!_inputEnabled || HoldStill) return;
+            Vector2 px = IonInput.LookDelta;
+            if (px.sqrMagnitude < 1e-8f) return;
+            Vector2 delta = px * MouseSensitivity; // NOT * deltaTime
             _yaw = Mathf.Repeat(_yaw + delta.x, 360f);
             _pitch = Mathf.Clamp(_pitch - delta.y, -MaxPitch, MaxPitch);
             ApplyRotation();
@@ -377,28 +430,59 @@ namespace Ion.Gameplay
                 _camera.transform.localRotation = Quaternion.Euler(_pitch, 0f, 0f);
         }
 
+        Vector3 _nudgeVelocity;
+        float _nudgeT = 1f, _nudgeSeconds = 1f, _nudgePitch, _nudgePitchDone;
+        bool _noAirControl;
+
+        /// <summary>
+        /// A gentle shove that eases off over <paramref name="seconds"/> (e.g. away from a wall when the floor gives
+        /// way), optionally easing the view <paramref name="pitchDownDegrees"/> down over the same time.
+        /// </summary>
+        public void Nudge(Vector3 horizontalVelocity, float seconds, float pitchDownDegrees = 0f)
+        {
+            horizontalVelocity.y = 0f;
+            _nudgeVelocity = horizontalVelocity;
+            _nudgeSeconds = Mathf.Max(0.05f, seconds);
+            _nudgeT = 0f;
+            _nudgePitch = pitchDownDegrees;
+            _nudgePitchDone = 0f;
+            _noAirControl = true;
+            _horizontalVelocity = Vector3.zero;
+        }
+
+        /// <summary>Caps the downward speed (limbo drift); pass <see cref="MaxFallSpeed"/> to lift the cap.</summary>
+        public void LimitFallSpeed(float metresPerSecond)
+        {
+            _fallLimit = metresPerSecond >= MaxFallSpeed ? -1f : Mathf.Max(0f, metresPerSecond);
+        }
+
         void HandleMove(Keyboard kb)
         {
             if (_cc == null || !_cc.enabled) return;
+            if (_frozen)
+            {
+                _horizontalVelocity = Vector3.zero;
+                _verticalVelocity = 0f;
+                _nudgeT = _nudgeSeconds;   // a rewind / teleport cancels any shove
+                _noAirControl = false;
+                return;
+            }
 
             float dt = Time.deltaTime;
             float now = Time.time;
 
             Vector2 input = Vector2.zero;
-            bool sprint = false;
-            if (_inputEnabled && kb != null)
+            if (_inputEnabled && !HoldStill && kb != null && IonInput.Active)
             {
                 if (kb.wKey.isPressed || kb.upArrowKey.isPressed) input.y += 1f;
                 if (kb.sKey.isPressed || kb.downArrowKey.isPressed) input.y -= 1f;
                 if (kb.dKey.isPressed || kb.rightArrowKey.isPressed) input.x += 1f;
                 if (kb.aKey.isPressed || kb.leftArrowKey.isPressed) input.x -= 1f;
-                sprint = kb.leftShiftKey.isPressed;
                 if (kb.spaceKey.wasPressedThisFrame) _jumpPressedTime = now;
             }
             if (Time.time < _scriptedUntil)
             {
                 input = _scriptedInput;
-                sprint = false;
                 if (_scriptedHasTarget)
                 {
                     Vector3 to = _scriptedTarget - transform.position;
@@ -417,10 +501,16 @@ namespace Ion.Gameplay
             }
             if (input.sqrMagnitude > 1f) input.Normalize();
 
-            float speed = sprint ? SprintSpeed : WalkSpeed;
-            Vector3 wish = (transform.forward * input.y + transform.right * input.x) * speed;
+            Vector3 wish = (transform.forward * input.y + transform.right * input.x) * WalkSpeed;
 
             bool grounded = _cc.isGrounded;
+            // After the floor gave way (Nudge): no air control until the player lands, so a held W does not drag
+            // the camera down the island face (a flat wall filling the screen read as a camera bug).
+            if (_noAirControl)
+            {
+                if (grounded && _nudgeT >= _nudgeSeconds) _noAirControl = false;
+                else wish = Vector3.zero;
+            }
             if (grounded)
             {
                 _lastGroundedTime = now;
@@ -434,13 +524,35 @@ namespace Ion.Gameplay
                 _lastGroundedTime = -10f;
             }
 
-            _verticalVelocity = Mathf.Max(_verticalVelocity - Gravity * dt, -MaxFallSpeed);
+            float maxFall = _fallLimit >= 0f ? _fallLimit : MaxFallSpeed;
+            float v = _verticalVelocity - Gravity * GravityScale * dt;
+            if (v < -maxFall)
+            {
+                // Ease into a lowered cap instead of snapping (limbo slows the fall gently).
+                v = _fallLimit >= 0f ? Mathf.MoveTowards(_verticalVelocity, -maxFall, Gravity * dt * 1.5f) : -maxFall;
+            }
+            _verticalVelocity = v;
             if (!grounded) _fallSpeed = Mathf.Max(0f, -_verticalVelocity);
 
             float accel = grounded ? GroundAcceleration : AirAcceleration;
             _horizontalVelocity = Vector3.MoveTowards(_horizontalVelocity, wish, accel * dt);
 
-            CollisionFlags flags = _cc.Move((_horizontalVelocity + Vector3.up * _verticalVelocity) * dt);
+            Vector3 nudge = Vector3.zero;
+            if (_nudgeT < _nudgeSeconds)
+            {
+                _nudgeT += dt;
+                float k = Mathf.Clamp01(_nudgeT / _nudgeSeconds);
+                nudge = _nudgeVelocity * (1f - k * k);   // eases off
+                if (_nudgePitch != 0f)
+                {
+                    // Ease the view down a little while the nudge lasts (a fall reads as a fall, not a wall).
+                    float target = Mathf.SmoothStep(0f, _nudgePitch, k);
+                    _pitch = Mathf.Clamp(_pitch + (target - _nudgePitchDone), -MaxPitch, MaxPitch);
+                    _nudgePitchDone = target;
+                    ApplyRotation();
+                }
+            }
+            CollisionFlags flags = _cc.Move((_horizontalVelocity + nudge + Vector3.up * _verticalVelocity) * dt);
             if ((flags & CollisionFlags.Above) != 0 && _verticalVelocity > 0f)
                 _verticalVelocity = 0f;
         }
@@ -479,26 +591,48 @@ namespace Ion.Gameplay
             ApplyRotation();
         }
 
-        /// <summary>Overrides the respawn point used when the player falls out of the world.</summary>
+        /// <summary>Legacy respawn point (a <see cref="PlayerSpawn"/> nearby); used only as a last fallback.</summary>
         public void SetCheckpoint(Vector3 position, float yaw)
         {
             _checkpointPosition = position;
             _checkpointYaw = yaw;
         }
 
-        /// <summary>Moves the player back to the last checkpoint.</summary>
+        /// <summary>Last-resort move back to the legacy spawn checkpoint (when there is no rewind history).</summary>
         public void Respawn()
         {
             Teleport(_checkpointPosition, _checkpointYaw);
+            NotifyFallRecovered();
+        }
+
+        /// <summary>
+        /// Called after a fall recovery (and checkpoint restores, with <paramref name="countsAsRespawn"/> false):
+        /// lifts limbo gravity, counts the respawn and raises <see cref="Respawned"/>.
+        /// </summary>
+        public void NotifyFallRecovered(bool countsAsRespawn = true)
+        {
+            GravityScale = 1f;
+            _fallLimit = -1f;
+            _verticalVelocity = 0f;
+            _fallSpeed = 0f;
+            if (!countsAsRespawn) return;
             RespawnCount++;
-            GameplayUI.Toast("Whoops - back to the last checkpoint");
-            Respawned?.Invoke();
+            try { Respawned?.Invoke(); }
+            catch (Exception e) { Debug.LogException(e); }
         }
 
         /// <summary>Instantly moves the player (feet position) and sets the view yaw; resets velocity and pitch.</summary>
-        public void Teleport(Vector3 position, float yaw)
+        public void Teleport(Vector3 position, float yaw) => Teleport(position, yaw, false);
+
+        /// <summary>
+        /// Instantly moves the player. <paramref name="silent"/>: a rewind's own pose move (no
+        /// <see cref="Teleported"/>, so it is not mistaken for a zone entry).
+        /// </summary>
+        public void Teleport(Vector3 position, float yaw, bool silent)
         {
-            _fadeRespawnToken = 0; // a pending fall-respawn fade no longer applies
+            _nudgeT = _nudgeSeconds;
+            _noAirControl = false;
+            Vector3 from = transform.position;
             // A CharacterController overrides transform writes while enabled.
             if (_cc != null) _cc.enabled = false;
             transform.position = position;
@@ -512,6 +646,9 @@ namespace Ion.Gameplay
             _wasGrounded = true;
             _fallSpeed = 0f;
             ResetViewEffects();
+            if (silent) return;
+            try { Teleported?.Invoke(from, position); }
+            catch (Exception e) { Debug.LogException(e); }
         }
     }
 }

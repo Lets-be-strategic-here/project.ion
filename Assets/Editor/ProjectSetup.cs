@@ -144,7 +144,12 @@ namespace Ion.EditorTools
             }
             rendererData.renderingMode = UnityEngine.Rendering.Universal.RenderingMode.Forward; // NOT Forward+
             rendererData.depthPrimingMode = UnityEngine.Rendering.Universal.DepthPrimingMode.Disabled;
-            // postProcessData stays null: no post-processing in this slice (saves bandwidth on the web).
+            // Post-processing data: only the Ultra tier turns post-processing on (bloom, per camera at runtime,
+            // UltraFx); every other tier keeps it off, so this costs nothing there.
+            if (rendererData.postProcessData == null)
+                rendererData.postProcessData = AssetDatabase.LoadAssetAtPath<PostProcessData>(
+                    "Packages/com.unity.render-pipelines.universal/Runtime/Data/PostProcessData.asset");
+            EnsureSsaoFeature(rendererData);
             EditorUtility.SetDirty(rendererData);
 
             var urp = AssetDatabase.LoadAssetAtPath<UniversalRenderPipelineAsset>(UrpAssetPath);
@@ -176,7 +181,10 @@ namespace Ion.EditorTools
             SetInt(so, "m_MainLightRenderingMode", (int)UnityEngine.Rendering.Universal.LightRenderingMode.PerPixel);
             SetBool(so, "m_MainLightShadowsSupported", true);
             SetInt(so, "m_MainLightShadowmapResolution", 2048);
-            SetInt(so, "m_AdditionalLightsRenderingMode", (int)UnityEngine.Rendering.Universal.LightRenderingMode.PerVertex);
+            // Per-pixel local lights (lamps, lanterns, teleporters): UltraFx enables at most 8 Light components, and
+            // only on the Ultra tier; with none enabled URP drops the additional-lights keyword (no cost elsewhere).
+            SetInt(so, "m_AdditionalLightsRenderingMode", (int)UnityEngine.Rendering.Universal.LightRenderingMode.PerPixel);
+            SetInt(so, "m_AdditionalLightsPerObjectLimit", 8);
             SetBool(so, "m_AdditionalLightShadowsSupported", false);
             SetBool(so, "m_SoftShadowsSupported", true); // filtered edges; AdaptiveQuality picks the quality per tier
             SetInt(so, "m_SoftShadowQuality", 2);
@@ -186,6 +194,10 @@ namespace Ion.EditorTools
             SetBool(so, "m_SupportsHDR", false);
             SetInt(so, "m_MSAA", 4);
             SetFloat(so, "m_ShadowDistance", 40f);
+            // Toon shadows are thresholded (FlatToon): a little more bias than the default keeps acne stripes off
+            // grazing walls beside pilasters and trims without visible peter-panning at 4096 / 30 m.
+            SetFloat(so, "m_ShadowDepthBias", 1.6f);
+            SetFloat(so, "m_ShadowNormalBias", 1.3f);
             SetInt(so, "m_ShadowCascadeCount", 1);
             so.ApplyModifiedPropertiesWithoutUndo();
             EditorUtility.SetDirty(urp);
@@ -193,6 +205,30 @@ namespace Ion.EditorTools
             GraphicsSettings.defaultRenderPipeline = urp;
             AssetDatabase.SaveAssets();
             return urp;
+        }
+
+        /// <summary>
+        /// Removes URP's SSAO feature if an earlier setup added it. Measured on WebGL2 (Ultra, Chrome/Metal): the
+        /// depth prepass doubled the draw calls and the 4-sample, downsampled result was noisy and blotchy on the
+        /// flat toon surfaces. Ultra uses a cheap substitute instead (deeper baked contact shade, Ambience).
+        /// </summary>
+        static void EnsureSsaoFeature(UniversalRendererData rendererData)
+        {
+            var features = rendererData.rendererFeatures;
+            for (int i = features.Count - 1; i >= 0; i--)
+            {
+                if (!(features[i] is ScreenSpaceAmbientOcclusion ssao)) continue;
+                features.RemoveAt(i);
+                var rso = new SerializedObject(rendererData);
+                var map = rso.FindProperty("m_RendererFeatureMap");
+                if (map != null && i < map.arraySize)
+                {
+                    map.DeleteArrayElementAtIndex(i);
+                    rso.ApplyModifiedPropertiesWithoutUndo();
+                }
+                AssetDatabase.RemoveObjectFromAsset(ssao);
+                UnityEngine.Object.DestroyImmediate(ssao, true);
+            }
         }
 
         // ------------------------------------------------------------------ quality

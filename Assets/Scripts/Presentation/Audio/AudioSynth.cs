@@ -3,9 +3,9 @@ using UnityEngine;
 namespace Ion.Presentation.Audio
 {
     /// <summary>
-    /// Pure, deterministic sample generators for <see cref="ProceduralAudio"/> (22050 Hz mono, -1..1).
-    /// Startup-only: each call allocates its result array. No Unity objects are touched here, so every
-    /// generator can be unit-tested or run in edit mode.
+    /// Pure, deterministic sample generators (22050 Hz mono, -1..1). Since the offline-rendered clips
+    /// (tools/audio) shipped, these are only the silent-safe fallback <see cref="SfxLibrary"/> uses when a clip
+    /// is missing from Resources/Audio. Each call allocates its result array. No Unity objects are touched here.
     /// </summary>
     public static class AudioSynth
     {

@@ -1,0 +1,27 @@
+[project]ion - audio credits
+============================
+
+Music (Audio/Music/*.ogg)
+  Original. Rendered offline by tools/audio/ionmusic.py (repo Vasiniks/project.ion).
+  No third-party samples. Same licence as the project.
+
+Sound effects (Audio/Sfx/*.ogg)
+  Original. Rendered offline by tools/audio/ionsfx.py. Everything is synthesised,
+  except these layers, taken from Kenney's pack below:
+    switch_press      <- impactMetal_light_000
+    mover_stop        <- impactWood_heavy_000
+    hatch_rise        <- impactWood_heavy_000
+    collapse_crack    <- impactPlank_medium_000, impactPlank_medium_001
+
+Footsteps (Audio/Sfx/Footsteps/step_*.ogg)
+  Kenney "Impact Sounds" 1.0, by Kenney (www.kenney.nl), released 2019-12-19.
+  Source:   https://kenney.nl/assets/impact-sounds
+  Licence:  Creative Commons Zero, CC0 1.0 Universal (public domain dedication)
+            http://creativecommons.org/publicdomain/zero/1.0/
+            Attribution is not required. We credit Kenney anyway.
+  Files:    footstep_concrete_000..004 -> step_tile_0..4 (high-passed) and step_stone_0..4
+            footstep_wood_000..004     -> step_wood_0..4
+            footstep_grass_000..004    -> step_grass_0..4
+  Changes:  converted to mono 44.1 kHz, trimmed, filtered and normalised by tools/audio/ionsfx.py.
+  The unmodified source files and Kenney's License.txt are kept in
+  tools/audio/sources/kenney_impact_sounds/.

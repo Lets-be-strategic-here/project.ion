@@ -2,6 +2,7 @@ using System.Collections.Generic;
 using Ion.Gameplay;
 using Ion.Projection;
 using Ion.Levels;
+using Ion.Presentation.Motion;
 using Ion.Web;
 using UnityEngine;
 using UnityEngine.InputSystem;
@@ -11,10 +12,11 @@ namespace Ion.Presentation
 {
     /// <summary>
     /// The end-of-game card shown by the Gallery's final teleporter: title, "thanks for playing", a
-    /// one-line credit and two buttons (Play again / View projects). While open the player's input is off
-    /// and the cursor is free; the click-to-play overlay stays away. Buttons are hit-tested here from the
-    /// raw pointer (no uGUI Selectables), like the settings card, so the cursor-lock logic elsewhere never
-    /// fights them.
+    /// one-line credit and two buttons (Play again / View projects). Opening releases the pointer on
+    /// purpose (art bible §9.3); the player's input is off and the click-to-play overlay stays away.
+    /// "Play again" re-locks inside its own click: the card registers the button as the page's only
+    /// "allow" region, so the browser's lock happens synchronously in that gesture. Buttons are hit-tested
+    /// here from the raw pointer (no uGUI Selectables).
     /// </summary>
     [DefaultExecutionOrder(31000)]
     public sealed class EndCard : MonoBehaviour
@@ -34,14 +36,18 @@ namespace Ion.Presentation
         RawImage _photo;
         Text _photoCaption;
         bool _open;
+        bool _sawUnlocked;
         float _t;
+        float _hoverPlay, _hoverProjects;
+        /// <summary>PointerLock rect slot used for the Play again button.</summary>
+        const int PointerRectSlot = 1;
         readonly List<GameObject> _hidden = new List<GameObject>();
 
         /// <summary>HUD layers (siblings under the UI canvas) hidden while the card is up.</summary>
         static readonly string[] HudLayers = { "PhotoOverlay", "Crosshair", "Hud", "Onboarding" };
 
-        static readonly Color PlayColor = Palette.Butter;
-        static readonly Color ProjectsColor = new Color32(0xF1, 0xE6, 0xD2, 0xFF);
+        static readonly Color PlayColor = UIPalette.Ion;          // the thing to use
+        static readonly Color ProjectsColor = UIPalette.Plaster;
 
         void Awake()
         {
@@ -66,8 +72,9 @@ namespace Ion.Presentation
             WebLinks.SetEndCardOpen(true);
             var player = FirstPersonController.Current;
             if (player != null) player.InputEnabled = false;
-            Cursor.lockState = CursorLockMode.None;
-            Cursor.visible = true;
+            _sawUnlocked = false;
+            PointerLock.Release();
+            IonInput.ResetHeld();
         }
 
         public void Close()
@@ -75,6 +82,8 @@ namespace Ion.Presentation
             _open = false;
             SetHudVisible(true);
             WebLinks.SetEndCardOpen(false);
+            PointerLock.SetRect(PointerRectSlot, PointerLock.RectKind.Allow, null);
+            PointerLock.SetArmed(false);
         }
 
         /// <summary>Hides / restores the HUD layers (inventory, prompts, toasts, held photo, tutorial).</summary>
@@ -125,7 +134,7 @@ namespace Ion.Presentation
                 caption = pick != null ? pick.Label : "";
             }
             _photo.texture = pick != null ? pick.Preview : null;
-            _photo.color = _photo.texture != null ? Color.white : Palette.Sky;
+            _photo.color = _photo.texture != null ? Color.white : UIPalette.Frost;
             if (_photo.texture != null)
             {
                 // Cover-crop the photo into the frame.
@@ -153,41 +162,49 @@ namespace Ion.Presentation
                 var game = GameBootstrap.Instance;
                 if (game != null) game.Restart();
             });
-            // The click is a user gesture, so the browser allows locking the pointer again.
-            Cursor.lockState = CursorLockMode.Locked;
-            Cursor.visible = false;
+            // On the web the page has already locked inside this click (the button is the allow region);
+            // elsewhere lock from script.
+            PointerLock.Request();
         }
 
         void Update()
         {
             float dt = Mathf.Min(Time.unscaledDeltaTime, 0.05f);
-            _t = Mathf.MoveTowards(_t, _open ? 1f : 0f, dt / (_open ? 0.45f : 0.25f));
-            float e = 1f - Mathf.Pow(1f - _t, 3f);
+            // In 2× the panel time (it is the ending), out like any panel.
+            _t = Mathf.MoveTowards(_t, _open ? 1f : 0f, dt / (_open ? Feel.PanelInSeconds * 2f : Feel.PanelOutSeconds));
+            float e = _open ? Ease.OutCubic(_t) : Ease.InQuad(_t);
             _group.alpha = e;
             Rect screen = ((RectTransform)transform).rect;
             float fit = Mathf.Min(1f, (screen.width - 32f) / Mathf.Max(1f, _card.sizeDelta.x), (screen.height - 32f) / Mathf.Max(1f, _card.sizeDelta.y));
-            float s = Mathf.Lerp(0.94f, 1f, e) * Mathf.Max(0.3f, fit);
+            float s = Mathf.Lerp(0.97f, 1f, e) * Mathf.Max(0.3f, fit);
             _card.localScale = new Vector3(s, s, 1f);
-            _card.anchoredPosition = new Vector2(0f, (1f - e) * -18f);
+            _card.anchoredPosition = new Vector2(0f, -(1f - e) * Feel.PanelRisePx);
             bool active = _t > 0.001f;
             if (_content.activeSelf != active) _content.SetActive(active);
             if (!_open) return;
 
-            // Keep the cursor free and the player paused while the card is up.
+            // Keep the player paused while the card is up.
             var player = FirstPersonController.Current;
             if (player != null && player.InputEnabled) player.InputEnabled = false;
-            if (Cursor.lockState == CursorLockMode.Locked)
+
+            // The only way to get locked while the card is open is a click on Play again (the page's allow
+            // region), once the deliberate release has gone through.
+            if (!PointerLock.IsLocked) _sawUnlocked = true;
+            else if (_sawUnlocked) { PlayAgain(); return; }
+            if (_t >= 0.6f)
             {
-                Cursor.lockState = CursorLockMode.None;
-                Cursor.visible = true;
+                PointerLock.SetRect(PointerRectSlot, PointerLock.RectKind.Allow, UIUtil.ScreenRect(_playButton));
+                PointerLock.SetArmed(_sawUnlocked);
             }
 
             var mouse = Mouse.current;
             if (mouse == null || _t < 0.6f) return;
             Vector2 pos = mouse.position.ReadValue();
             bool overPlay = Contains(_playButton, pos), overProjects = Contains(_projectsButton, pos);
-            _playBg.color = overPlay ? Darker(PlayColor) : PlayColor;
-            _projectsBg.color = overProjects ? Darker(ProjectsColor) : ProjectsColor;
+            _hoverPlay = Mathf.MoveTowards(_hoverPlay, overPlay ? 1f : 0f, dt / Feel.UIHoverSeconds);
+            _hoverProjects = Mathf.MoveTowards(_hoverProjects, overProjects ? 1f : 0f, dt / Feel.UIHoverSeconds);
+            _playBg.color = Color.Lerp(PlayColor, Darker(PlayColor), Ease.OutQuad(_hoverPlay));
+            _projectsBg.color = Color.Lerp(ProjectsColor, Darker(ProjectsColor), Ease.OutQuad(_hoverProjects));
 
             if (mouse.leftButton.wasPressedThisFrame)
             {
@@ -196,7 +213,7 @@ namespace Ion.Presentation
             }
         }
 
-        static Color Darker(Color c) => new Color(c.r * 0.9f, c.g * 0.9f, c.b * 0.9f, c.a);
+        static Color Darker(Color c) => new Color(c.r * 0.88f, c.g * 0.88f, c.b * 0.88f, c.a);
 
         static bool Contains(RectTransform rt, Vector2 screen) =>
             rt.gameObject.activeInHierarchy && RectTransformUtility.RectangleContainsScreenPoint(rt, screen, null);
@@ -206,7 +223,7 @@ namespace Ion.Presentation
             var root = (RectTransform)transform;
             UIUtil.Stretch(root);
 
-            var dim = UIUtil.NewImage("Dim", root, UIUtil.WithAlpha(Palette.Ink, 0.74f));
+            var dim = UIUtil.NewImage("Dim", root, UIUtil.WithAlpha(UIPalette.Graphite, 0.74f));
             UIUtil.Stretch(dim.rectTransform);
             dim.raycastTarget = true;
             _content = dim.gameObject;
@@ -219,12 +236,12 @@ namespace Ion.Presentation
             const float w = 820f, h = 440f;
             _card = UIUtil.NewRect("Card", dim.rectTransform);
             UIUtil.Anchor(_card, new Vector2(0.5f, 0.5f), new Vector2(0.5f, 0.5f), Vector2.zero, new Vector2(w, h));
-            var shadow = UIUtil.NewImage("Shadow", _card, new Color(0.08f, 0.08f, 0.16f, 0.35f), UIUtil.RoundedSprite, true);
+            var shadow = UIUtil.NewImage("Shadow", _card, UIUtil.WithAlpha(UIPalette.Cyanotype, 0.3f), UIUtil.RoundedSprite, true);
             UIUtil.Stretch(shadow.rectTransform);
             shadow.rectTransform.offsetMin = new Vector2(6f, -16f);
             shadow.rectTransform.offsetMax = new Vector2(6f, -16f);
             shadow.pixelsPerUnitMultiplier = 0.8f;
-            var face = UIUtil.NewImage("Face", _card, Palette.Cream, UIUtil.RoundedSprite, true);
+            var face = UIUtil.NewImage("Face", _card, UIPalette.Paper, UIUtil.RoundedSprite, true);
             UIUtil.Stretch(face.rectTransform);
             face.pixelsPerUnitMultiplier = 0.8f;
             face.raycastTarget = true;
@@ -235,30 +252,30 @@ namespace Ion.Presentation
             UIUtil.Anchor(polaroid, new Vector2(0f, 0.5f), new Vector2(0.5f, 0.5f), new Vector2(46f + (photoW + border * 2f) * 0.5f, 6f),
                           new Vector2(photoW + border * 2f, photoH + border + bottom));
             polaroid.localRotation = Quaternion.Euler(0f, 0f, 3.5f);
-            var pShadow = UIUtil.NewImage("Shadow", polaroid, new Color(0.1f, 0.1f, 0.2f, 0.22f), UIUtil.RoundedSprite, true);
+            var pShadow = UIUtil.NewImage("Shadow", polaroid, UIUtil.WithAlpha(UIPalette.Cyanotype, 0.22f), UIUtil.RoundedSprite, true);
             UIUtil.Stretch(pShadow.rectTransform);
             pShadow.rectTransform.offsetMin = new Vector2(5f, -9f);
             pShadow.rectTransform.offsetMax = new Vector2(5f, -9f);
             pShadow.pixelsPerUnitMultiplier = 4f;
-            var pFrame = UIUtil.NewImage("Frame", polaroid, Palette.White, UIUtil.RoundedSprite, true);
+            var pFrame = UIUtil.NewImage("Frame", polaroid, UIPalette.Frost, UIUtil.RoundedSprite, true);
             UIUtil.Stretch(pFrame.rectTransform);
             pFrame.pixelsPerUnitMultiplier = 4f;
             _photo = UIUtil.NewRaw("Photo", polaroid);
             UIUtil.Anchor(_photo.rectTransform, new Vector2(0.5f, 1f), new Vector2(0.5f, 1f), new Vector2(0f, -border), new Vector2(photoW, photoH));
-            _photoCaption = UIUtil.NewText("Caption", polaroid, "", 26, Palette.Slate, TextAnchor.MiddleCenter, FontStyle.Italic, false);
+            _photoCaption = UIUtil.NewText("Caption", polaroid, "", 26, UIPalette.GraphiteSoft, TextAnchor.MiddleCenter, FontStyle.Italic, false);
             UIUtil.Anchor(_photoCaption.rectTransform, new Vector2(0.5f, 0f), new Vector2(0.5f, 0f), new Vector2(0f, 8f), new Vector2(photoW, bottom - 12f));
 
             // Right column.
             const float colX = 46f + photoW + border * 2f + 40f;
             float colW = w - colX - 40f;
             float colCenter = colX + colW * 0.5f - w * 0.5f;
-            var title = UIUtil.NewText("Title", _card, "<color=#2B2F3666>[</color>project<color=#2B2F3666>]</color>ion", 72, Palette.Ink, TextAnchor.MiddleCenter, FontStyle.Bold, false);
+            var title = UIUtil.NewText("Title", _card, "<color=#C59A45>[</color>project<color=#C59A45>]</color>ion", 72, UIPalette.Graphite, TextAnchor.MiddleCenter, FontStyle.Bold, false);
             UIUtil.Anchor(title.rectTransform, new Vector2(0.5f, 1f), new Vector2(0.5f, 1f), new Vector2(colCenter, -48f), new Vector2(colW, 96f));
 
-            var thanks = UIUtil.NewText("Thanks", _card, "thanks for playing", 34, Palette.Ink, TextAnchor.MiddleCenter, FontStyle.Italic, false);
+            var thanks = UIUtil.NewText("Thanks", _card, "thanks for playing", 34, UIPalette.Graphite, TextAnchor.MiddleCenter, FontStyle.Italic, false);
             UIUtil.Anchor(thanks.rectTransform, new Vector2(0.5f, 1f), new Vector2(0.5f, 1f), new Vector2(colCenter, -150f), new Vector2(colW, 48f));
 
-            var credit = UIUtil.NewText("Credit", _card, "a Viewfinder-inspired prototype", 22, Palette.Slate, TextAnchor.MiddleCenter, FontStyle.Normal, false);
+            var credit = UIUtil.NewText("Credit", _card, "a Viewfinder-inspired prototype", 22, UIPalette.GraphiteSoft, TextAnchor.MiddleCenter, FontStyle.Normal, false);
             UIUtil.Anchor(credit.rectTransform, new Vector2(0.5f, 1f), new Vector2(0.5f, 1f), new Vector2(colCenter, -194f), new Vector2(colW, 32f));
 
             _playBg = MakeButton("PlayAgain", "Play again", new Vector2(colCenter, 136f), PlayColor, out _playButton);
@@ -273,7 +290,7 @@ namespace Ion.Presentation
             rect = bg.rectTransform;
             UIUtil.Anchor(rect, new Vector2(0.5f, 0f), new Vector2(0.5f, 0.5f), pos, new Vector2(300f, 60f));
             bg.raycastTarget = true;
-            var text = UIUtil.NewText("Label", rect, label, 26, Palette.Ink, TextAnchor.MiddleCenter, FontStyle.Bold, false);
+            var text = UIUtil.NewText("Label", rect, label, 26, UIPalette.Graphite, TextAnchor.MiddleCenter, FontStyle.Bold, false);
             UIUtil.Stretch(text.rectTransform);
             return bg;
         }

@@ -17,6 +17,11 @@
 //    per-instance tint and contact shading into it; the slicer carries it through cuts)
 //  * per-face colour jitter hashed from the flat normal (_FaceJitter) and, for grass (_GroundVar),
 //    a soft world-space colour drift plus faint triangular facets that fade with distance
+//  * in-shader surface patterns (IonPattern.hlsl, art bible §3.2 / §6.3) from TEXCOORD0 = (pattern-space xyz,
+//    PatternCode): tiles, formwork, boards ... plus a section hatch on cut faces. Off (bit-identical output)
+//    when _IonPatternOn == 0 or the code is 0/1. _PatternStrength scales the contrast per material.
+//  * zone shadow tint: the global _IonShadowTint (Atmosphere.ApplyMood) replaces _ShadowTint by
+//    _IonShadowTintMix when set (its alpha is 1); unset in tests, so the material tint stays
 Shader "Ion/FlatToon"
 {
     Properties
@@ -38,6 +43,10 @@ Shader "Ion/FlatToon"
         _GroundVar ("Ground Colour Variation", Range(0, 1)) = 0
         _AoBoost ("Vertex AO Boost (Low tier)", Range(0, 2)) = 0
         _TopLight ("Sunlit Top Highlight", Range(0, 1)) = 0
+        _PatternStrength ("Pattern Strength", Range(0, 1.5)) = 1
+        _SelfLit ("Self-lit (emission carries the colour)", Range(0, 1)) = 0
+        _GlowBoost ("Ultra: HDR glow boost for bloom (Ion / Warm / Safelight)", Range(0, 1)) = 0
+        _UltraOnly ("Ultra-only detail (collapsed on other tiers)", Float) = 0
     }
 
     SubShader
@@ -73,7 +82,21 @@ Shader "Ion/FlatToon"
             half _GroundVar;
             half _AoBoost;
             half _TopLight;
+            float _PatternStrength;
+            half _SelfLit;
+            half _GlowBoost;
+            float _UltraOnly;
         CBUFFER_END
+
+        // Ultra tier (UltraFx): x = on (0/1), y = fog sun-scatter strength, z = bounce strength, w = HDR glow gain.
+        float4 _IonUltraFx;
+
+        // Ultra-only detail (Palette.GetUltra): every vertex collapses to one point on the other tiers -> no pixels,
+        // no shadow, no depth. Applied identically in every pass.
+        float4 IonUltraCull(float4 positionCS)
+        {
+            return (_UltraOnly > 0.5 && _IonUltraFx.x < 0.5) ? float4(0.0, 0.0, 0.0, 1.0) : positionCS;
+        }
 
         // Global look switches, set by Ion.Presentation.Ambience:
         // x = rim multiplier, y = sway multiplier, z = 1 when set (otherwise both default to 1),
@@ -118,10 +141,20 @@ Shader "Ion/FlatToon"
 
             #pragma multi_compile _ _MAIN_LIGHT_SHADOWS _MAIN_LIGHT_SHADOWS_CASCADE
             #pragma multi_compile_fragment _ _SHADOWS_SOFT _SHADOWS_SOFT_LOW _SHADOWS_SOFT_MEDIUM _SHADOWS_SOFT_HIGH
+            // Ultra tier: per-pixel local lights (lamps, lanterns, teleporters). URP only enables the keyword when a
+            // local Light is visible, and UltraFx enables them on Ultra only.
+            #pragma multi_compile _ _ADDITIONAL_LIGHTS
             #pragma multi_compile_instancing
 
             #include "Packages/com.unity.render-pipelines.universal/ShaderLibrary/Lighting.hlsl"
             #include "IonAtmosphere.hlsl"
+            #include "IonPattern.hlsl"
+
+            // Zone shadow tint (linear, a = 1 when set) and how much it replaces the material's _ShadowTint.
+            float4 _IonShadowTint;
+            float _IonShadowTintMix;
+            // Zone shade hue offset (linear, zero luma), added on the shade side only.
+            float4 _IonShadowHue;
 
             // Set by Ion.Presentation.Atmosphere (linear-space colours). If unset (all zero)
             // ambient falls back to the SH probe and fog is disabled.
@@ -134,6 +167,7 @@ Shader "Ion/FlatToon"
                 float4 positionOS : POSITION;
                 float3 normalOS   : NORMAL;
                 half4  color      : COLOR;
+                float4 uv0        : TEXCOORD0;   // xyz = pattern space (m), w = PatternCode
                 UNITY_VERTEX_INPUT_INSTANCE_ID
             };
 
@@ -143,6 +177,9 @@ Shader "Ion/FlatToon"
                 float3 positionWS : TEXCOORD0;
                 float3 normalWS   : TEXCOORD1;
                 half3  color      : TEXCOORD2;
+                // Plain interpolation (the code is constant per face; rounded in the fragment).
+                float3 patternPos  : TEXCOORD5;
+                float  patternCode : TEXCOORD6;
                 UNITY_VERTEX_INPUT_INSTANCE_ID
                 UNITY_VERTEX_OUTPUT_STEREO
             };
@@ -157,10 +194,12 @@ Shader "Ion/FlatToon"
                 float3 positionWS = IonObjectToWorld(input.positionOS.xyz, input.color.a);
                 float4 positionCS = TransformWorldToHClip(positionWS);
 
-                output.positionCS = positionCS;
+                output.positionCS = IonUltraCull(positionCS);
                 output.positionWS = positionWS;
                 output.normalWS = TransformObjectToWorldNormal(input.normalOS);
                 output.color = input.color.rgb;
+                output.patternPos = input.uv0.xyz;
+                output.patternCode = input.uv0.w;
                 return output;
             }
 
@@ -243,25 +282,48 @@ Shader "Ion/FlatToon"
                 #endif
 
                 half ndl = saturate(dot(n, mainLight.direction));
-                half lightTerm = ndl * shadow;
 
-                // 3-band ramp: 0 (shade), _MidBand (half-lit), 1 (lit) with soft smoothstep edges.
+                // 3-band ramp on N.L only: 0 (shade), _MidBand (half-lit), 1 (lit) with soft smoothstep edges.
+                // The cast shadow is thresholded separately (one crisp, anti-aliased edge on the iso-line of the
+                // filtered shadow) instead of being multiplied into N.L, where the soft PCF gradient crossed both
+                // ramp thresholds and drew a double halo ring, and its texel wobble showed as a saw-tooth.
                 half s = _RampSmooth;
-                half band = _MidBand * smoothstep(0.08h - s, 0.08h + s, lightTerm)
-                          + (1.0h - _MidBand) * smoothstep(0.45h - s, 0.45h + s, lightTerm);
+                half band = _MidBand * smoothstep(0.08h - s, 0.08h + s, ndl)
+                          + (1.0h - _MidBand) * smoothstep(0.45h - s, 0.45h + s, ndl);
+                band *= smoothstep(0.35h, 0.65h, shadow);
 
                 // Vertex colour = baked tint / contact shade multiplier. On the Low tier (no realtime
                 // shadows) contact-shade materials deepen it so props still sit on the ground.
                 half aoBoost = _AoBoost * (half)_IonToonParams.w;
                 half3 vc = 1.0h - (1.0h - input.color) * (1.0h + aoBoost);
                 half3 albedo = IonDressAlbedo(_BaseColor.rgb * saturate(vc), nF, input.positionWS);
+                // Surface pattern (exactly 1 when off / None / no pattern space).
+                float3 pattern = IonPatternMultiplier(input.patternPos, input.patternCode, nF, input.positionWS, _PatternStrength);
+                albedo *= (half3)pattern;
                 half3 ambient = GradientAmbient(n);
 
-                // Shade side: a soft blue-lilac (never black), only gently following the ambient
-                // direction so cast shadows stay airy rather than dark teal.
-                half3 shadeLight = _ShadowTint.rgb * (0.72h + 0.28h * ambient);
+                // Shade side (art bible rule 7): a value drop TINTED by the sky, not made of it. The zone mood's
+                // shade (Atmosphere.ShadeMultiplier: a light grey carrying ~a quarter of the sky tint's chroma)
+                // replaces the material's when set, plus a small zero-luma hue offset (_IonShadowHue) added in
+                // the shade, so warm colours (red rugs, brass) darken and cool slightly instead of turning olive.
+                half3 shadowTint = _ShadowTint.rgb;
+                half3 shadeHue = half3(0.0h, 0.0h, 0.0h);
+                if (_IonShadowTint.a > 0.5)
+                {
+                    shadowTint = lerp(shadowTint, (half3)_IonShadowTint.rgb, (half)saturate(_IonShadowTintMix));
+                    shadeHue = (half3)_IonShadowHue.rgb;
+                }
+                half3 shadeLight = shadowTint * (0.8h + 0.2h * ambient);
+                // Ultra: a softer, richer shade: more of the sky ambient and a warm bounce from the sunlit ground on
+                // faces turned sideways / down (value only; the hue stays the zone's).
+                half ultra = (half)saturate(_IonUltraFx.x);
+                if (ultra > 0.0h)
+                {
+                    half3 bounce = (half3)_IonAmbientGround.rgb * mainLight.color * saturate(0.55h - 0.45h * n.y);
+                    shadeLight = lerp(shadeLight, shadowTint * (0.74h + 0.32h * ambient) + bounce * (half)_IonUltraFx.z, ultra);
+                }
                 half3 litLight = ambient * _LitAmbient + mainLight.color * _LitStrength;
-                half3 color = albedo * lerp(shadeLight, litLight, band);
+                half3 color = albedo * lerp(shadeLight, litLight, band) + shadeHue * (1.0h - band);
 
                 // Subtle rim from the sky colour, strongest on the shade side. No specular.
                 half rimScale = _IonToonParams.z > 0.5 ? (half)_IonToonParams.x : 1.0h;
@@ -281,10 +343,35 @@ Shader "Ion/FlatToon"
                 if (_TopLight > 0.001h)
                     color += mainLight.color * (_TopLight * saturate(n.y) * band);
 
-                color += _EmissionColor.rgb;
+                // Self-lit materials (Ion, Warm, Safelight, Frost, glows): _SelfLit is their display level. They show
+                // their own colour in sun and shade alike (a 14% dip in shade keeps the form), never tinted by the
+                // zone and never clipped to white. Everything else adds its emission (FreshPulse, legacy glows).
+                if (_SelfLit > 0.001h)
+                    color = albedo * (_SelfLit * lerp(0.86h, 1.0h, band));
+                else
+                    color += _EmissionColor.rgb * (half3)pattern;
+
+                // Ultra: local lights (warm lamps, safelights, ion devices) as a soft wrapped term on the albedo.
+                #if defined(_ADDITIONAL_LIGHTS)
+                {
+                    half3 local = half3(0.0h, 0.0h, 0.0h);
+                    uint lightCount = GetAdditionalLightsCount();
+                    for (uint li = 0u; li < lightCount; ++li)
+                    {
+                        Light l = GetAdditionalLight(li, input.positionWS);
+                        half nl = saturate(dot(n, l.direction));
+                        half wrap = 0.25h + 0.75h * smoothstep(0.0h, 0.4h, nl);
+                        local += l.color * (l.distanceAttenuation * wrap);
+                    }
+                    color += albedo * local * (_SelfLit > 0.001h ? 0.25h : 1.0h);
+                }
+                #endif
 
                 color = IonApplyFog(color, input.positionWS);
                 color = (half3)IonGrade(color, input.positionCS.xy);
+                // Ultra (HDR on): emissive interaction / lamp colours go past 1 so only they and the sun bloom.
+                if (_GlowBoost > 0.001h && _SelfLit > 0.001h)
+                    color *= 1.0h + _GlowBoost * (half)_IonUltraFx.w;
 
                 return half4(color, 1.0h);
             }
@@ -348,7 +435,7 @@ Shader "Ion/FlatToon"
                 #else
                     positionCS.z = max(positionCS.z, UNITY_NEAR_CLIP_VALUE);
                 #endif
-                output.positionCS = positionCS;
+                output.positionCS = IonUltraCull(positionCS);
                 return output;
             }
 
@@ -393,7 +480,7 @@ Shader "Ion/FlatToon"
                 Varyings output = (Varyings)0;
                 UNITY_SETUP_INSTANCE_ID(input);
                 UNITY_INITIALIZE_VERTEX_OUTPUT_STEREO(output);
-                output.positionCS = TransformWorldToHClip(IonObjectToWorld(input.positionOS.xyz, input.color.a));
+                output.positionCS = IonUltraCull(TransformWorldToHClip(IonObjectToWorld(input.positionOS.xyz, input.color.a)));
                 return output;
             }
 
@@ -440,7 +527,7 @@ Shader "Ion/FlatToon"
                 Varyings output = (Varyings)0;
                 UNITY_SETUP_INSTANCE_ID(input);
                 UNITY_INITIALIZE_VERTEX_OUTPUT_STEREO(output);
-                output.positionCS = TransformWorldToHClip(IonObjectToWorld(input.positionOS.xyz, input.color.a));
+                output.positionCS = IonUltraCull(TransformWorldToHClip(IonObjectToWorld(input.positionOS.xyz, input.color.a)));
                 output.normalWS = TransformObjectToWorldNormal(input.normalOS);
                 return output;
             }

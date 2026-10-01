@@ -1,5 +1,7 @@
+using System;
 using System.Text;
 using Ion.Gameplay;
+using Ion.Presentation.Motion;
 using UnityEngine;
 using UnityEngine.EventSystems;
 using UnityEngine.InputSystem;
@@ -9,20 +11,15 @@ using UnityEngine.UI;
 namespace Ion.Presentation.Quality
 {
     /// <summary>
-    /// Self-installing settings overlay (own Screen Space Overlay canvas, sort order 50, above the HUD,
-    /// the viewfinder and the click-to-play overlay). The bottom-right card is shown while the cursor is
-    /// unlocked: Quality (Auto / Low / Med / High), mouse sensitivity, an FPS readout toggle and a head-bob
-    /// toggle (walking bob + landing dip; on by default).
+    /// Self-installing settings overlay (own Screen Space Overlay canvas, sort order 50, above the HUD, the
+    /// viewfinder and the click-to-play overlay). The bottom-right card is shown while the game is paused
+    /// (pointer unlocked after having played): Quality (Low / Med / High / Ultra / Auto), mouse sensitivity, music
+    /// and effects volume, Raise (Hold / Toggle), Reduced motion, Head bob and the FPS readout.
     /// F3 toggles the small top-right FPS readout at any time (persisted in "ion.showFps").
     ///
-    /// Why the card does its own hit-testing instead of using uGUI Button/Slider:
-    /// FirstPersonController and ClickToPlayOverlay lock the cursor on ANY left press while it is
-    /// unlocked, and the Input System UI module drops pointer presses once the cursor is locked
-    /// (so a Button could miss its press, depending on update order). This component runs last in the
-    /// frame, reads the raw press position, handles the card itself and undoes that lock when the
-    /// press landed on the card. The card background is still a raycast target, so
-    /// EventSystem.current.IsPointerOverGameObject() is true over it. A guard on their side is the
-    /// cleaner fix. Having no Selectables also means WASD/Space can never drive these controls.
+    /// The card hit-tests the raw pointer itself (no uGUI Selectables, so WASD/Space never drive it), and it
+    /// registers its screen rect with <see cref="PointerLock"/> as a "block" region: a click on the card
+    /// never locks the pointer (the page checks the rect inside the click itself).
     /// </summary>
     [DefaultExecutionOrder(32000)]
     [DisallowMultipleComponent]
@@ -30,22 +27,56 @@ namespace Ion.Presentation.Quality
     {
         public const int SortingOrder = 50;
         public const string ShowFpsPrefKey = "ion.showFps";
+        public const string MusicVolumePrefKey = "ion.musicVolume";
+        public const string SfxVolumePrefKey = "ion.sfxVolume";
+        /// <summary>PointerLock rect slot used by this card.</summary>
+        public const int PointerRectSlot = 0;
 
         const int SliderSteps = 100;
         const float HandleSize = 22f;
         const float FpsRefreshSeconds = 0.5f;
         const float StatusRefreshSeconds = 0.25f;
-        const int FpsButton = 4; // index in _buttons after the four tier buttons
-        const int HeadBobButton = 5;
 
-        static readonly int[] TierButtonValues = { QualityTier.Auto, QualityTier.Low, QualityTier.Medium, QualityTier.High };
+        // Button indices: 0..4 quality tiers, then the toggles.
+        const int RaiseButton = 5, MotionButton = 6, HeadBobButton = 7, FpsButton = 8, ButtonCount = 9;
+        // Slider indices.
+        const int SensSlider = 0, MusicSlider = 1, SfxSlider = 2, SliderCount = 3;
+
+        static readonly int[] TierButtonValues = { QualityTier.Low, QualityTier.Medium, QualityTier.High, QualityTier.Ultra, QualityTier.Auto };
 
         public static SettingsPanel Instance { get; private set; }
+
+        // ---------------------------------------------------------------- volumes (read by Audio, Lead E)
+
+        static float s_Music = -1f, s_Sfx = -1f;
+
+        /// <summary>Music volume 0..1 (persisted). Audio applies it on top of the master volume.</summary>
+        public static float MusicVolume
+        {
+            get { if (s_Music < 0f) s_Music = Mathf.Clamp01(PlayerPrefs.GetFloat(MusicVolumePrefKey, 0.8f)); return s_Music; }
+            set { s_Music = Mathf.Clamp01(value); PlayerPrefs.SetFloat(MusicVolumePrefKey, s_Music); RaiseVolumes(); }
+        }
+
+        /// <summary>Sound-effects volume 0..1 (persisted).</summary>
+        public static float SfxVolume
+        {
+            get { if (s_Sfx < 0f) s_Sfx = Mathf.Clamp01(PlayerPrefs.GetFloat(SfxVolumePrefKey, 1f)); return s_Sfx; }
+            set { s_Sfx = Mathf.Clamp01(value); PlayerPrefs.SetFloat(SfxVolumePrefKey, s_Sfx); RaiseVolumes(); }
+        }
+
+        /// <summary>Raised when the music or effects volume changes (Audio subscribes).</summary>
+        public static event Action VolumesChanged;
+
+        static void RaiseVolumes()
+        {
+            try { VolumesChanged?.Invoke(); }
+            catch (Exception e) { Debug.LogException(e); }
+        }
 
         /// <summary>True while the settings card is (becoming) visible.</summary>
         public bool IsVisible => _wantVisible;
 
-        const float CardW = 400f, CardH = 344f, CardMargin = 28f;
+        const float CardW = 420f, CardH = 512f, CardMargin = 28f;
 
         /// <summary>
         /// Canvas units taken from the right edge (card width + margin) while the card is visible, 0 otherwise.
@@ -60,22 +91,28 @@ namespace Ion.Presentation.Quality
         GameObject _cardContent;
         CanvasGroup _group;
         bool _wantVisible;
+        float _vis;
 
-        readonly RectTransform[] _buttons = new RectTransform[6];
-        readonly Image[] _buttonBg = new Image[6];
-        readonly Color[] _buttonColor = new Color[6];
-        readonly Text[] _buttonText = new Text[6];
+        readonly RectTransform[] _buttons = new RectTransform[ButtonCount];
+        readonly Image[] _buttonBg = new Image[ButtonCount];
+        readonly Color[] _buttonColor = new Color[ButtonCount];
+        readonly Text[] _buttonText = new Text[ButtonCount];
+        readonly float[] _hoverT = new float[ButtonCount];
+        readonly float[] _pressT = new float[ButtonCount];
         int _hovered = -1;
         int _shownPref = int.MinValue;
 
-        RectTransform _slider;
-        RectTransform _sliderFill;
-        RectTransform _sliderHandle;
-        Image _sliderHandleImage;
-        Text _sensValue;
+        sealed class SliderUI
+        {
+            public RectTransform Root, Fill, Handle;
+            public Image HandleImage;
+            public Text Value;
+            public int Step;
+        }
+
+        readonly SliderUI[] _sliders = new SliderUI[SliderCount];
         string[] _sensLabels;
-        int _sensStep;
-        bool _dragging;
+        int _dragging = -1;
 
         Text _status;
         int _statusTier = -99, _statusPref = -99, _statusScalePct = -1;
@@ -90,11 +127,15 @@ namespace Ion.Presentation.Quality
         int _fpsFrames;
         readonly StringBuilder _sb = new StringBuilder(48);
 
-        bool _wasUnlocked;
-        bool _hasPlayed; // the card appears only after the player has been in the game (Esc), not on first load
+        bool _rectSent;
 
         [RuntimeInitializeOnLoadMethod(RuntimeInitializeLoadType.SubsystemRegistration)]
-        static void ResetStatics() => Instance = null;
+        static void ResetStatics()
+        {
+            Instance = null;
+            s_Music = s_Sfx = -1f;
+            VolumesChanged = null;
+        }
 
         [RuntimeInitializeOnLoadMethod(RuntimeInitializeLoadType.AfterSceneLoad)]
         static void Install()
@@ -149,15 +190,13 @@ namespace Ion.Presentation.Quality
 
             _showFps = PlayerPrefs.GetInt(ShowFpsPrefKey, 0) == 1;
             ApplyShowFps();
-            ApplyHeadBobLabel();
+            ApplyToggleLabels();
             RefreshTierButtons(true);
-            SyncSensitivityFromController();
+            SyncSlidersFromSettings();
 
-            _wasUnlocked = Cursor.lockState != CursorLockMode.Locked;
-            _hasPlayed = !_wasUnlocked;
-            _wantVisible = _wasUnlocked && _hasPlayed;
-            _group.alpha = _wantVisible ? 1f : 0f;
-            _cardContent.SetActive(_wantVisible);
+            _wantVisible = false;
+            _group.alpha = 0f;
+            _cardContent.SetActive(false);
         }
 
         void OnDestroy()
@@ -165,35 +204,39 @@ namespace Ion.Presentation.Quality
             if (Instance == this) Instance = null;
         }
 
+        /// <summary>True when <paramref name="screen"/> (pixels, origin bottom-left) is over the visible card.</summary>
+        public bool ContainsScreenPoint(Vector2 screen) => _wantVisible && Contains(_card, screen);
+
         void Update()
         {
-            float dt = Time.unscaledDeltaTime;
+            float dt = Mathf.Min(Time.unscaledDeltaTime, 0.05f);
             var mouse = Mouse.current;
             var kb = Keyboard.current;
 
             if (kb != null && kb.f3Key.wasPressedThisFrame) SetShowFps(!_showFps);
 
-            HandlePointer(mouse);
-
-            bool unlocked = Cursor.lockState != CursorLockMode.Locked;
-            if (!unlocked) _hasPlayed = true;
-            // Shown after Esc (not over the first-load title card) and never over the end card.
-            bool want = unlocked && _hasPlayed && !EndCard.IsOpen;
-            if (want && !_wantVisible) SyncSensitivityFromController();
+            bool unlocked = !PointerLock.IsLocked;
+            // Shown when paused after having played (not over the first-load title) and never over the end card.
+            bool want = unlocked && PointerLock.HasEverLocked && !EndCard.IsOpen;
+            if (want && !_wantVisible) SyncSlidersFromSettings();
             _wantVisible = want;
 
-            // Fade.
-            float target = _wantVisible ? 1f : 0f;
-            if (!Mathf.Approximately(_group.alpha, target))
-                _group.alpha = Mathf.MoveTowards(_group.alpha, target, dt * 8f);
-            bool active = _group.alpha > 0.001f;
+            HandlePointer(mouse, dt);
+
+            // Fade: in 0.22 s (easeOutCubic, 8 px rise), out 0.16 s (easeInQuad).
+            _vis = Mathf.MoveTowards(_vis, _wantVisible ? 1f : 0f, dt / (_wantVisible ? Feel.PanelInSeconds : Feel.PanelOutSeconds));
+            float a = _wantVisible ? Ease.OutCubic(_vis) : Ease.InQuad(_vis);
+            _group.alpha = a;
+            bool active = _vis > 0.001f;
             if (_cardContent.activeSelf != active) _cardContent.SetActive(active);
             _group.blocksRaycasts = _wantVisible;
 
-            LayoutCard();
+            LayoutCard(a);
+            SyncPointerRect();
 
             if (active)
             {
+                AnimateButtons(dt);
                 _statusTimer -= dt;
                 if (_statusTimer <= 0f)
                 {
@@ -204,85 +247,92 @@ namespace Ion.Presentation.Quality
             }
 
             if (_showFps) UpdateFps(dt);
+        }
 
-            _wasUnlocked = Cursor.lockState != CursorLockMode.Locked;
+        /// <summary>Tells the page where the card is, so a click on it never locks the pointer.</summary>
+        void SyncPointerRect()
+        {
+            if (_wantVisible)
+            {
+                PointerLock.SetRect(PointerRectSlot, PointerLock.RectKind.Block, UIUtil.ScreenRect(_card));
+                _rectSent = true;
+            }
+            else if (_rectSent)
+            {
+                PointerLock.SetRect(PointerRectSlot, PointerLock.RectKind.Block, null);
+                _rectSent = false;
+            }
         }
 
         /// <summary>Fits the card on short / narrow windows (scaled about its bottom-right corner).</summary>
-        void LayoutCard()
+        void LayoutCard(float alpha)
         {
             Rect r = ((RectTransform)transform).rect;
             float scale = Mathf.Min(1f, (r.height - CardMargin * 2f) / CardH, r.width * 0.42f / CardW);
-            scale = Mathf.Max(0.6f, scale);
+            scale = Mathf.Max(0.55f, scale);
             if (!Mathf.Approximately(_card.localScale.x, scale)) _card.localScale = new Vector3(scale, scale, 1f);
+            _card.anchoredPosition = new Vector2(-CardMargin, CardMargin - (1f - alpha) * Feel.PanelRisePx);
             ReservedRight = _wantVisible ? CardW * scale + CardMargin : 0f;
             ReservedTop = _wantVisible ? CardH * scale + CardMargin : 0f;
         }
 
         // ------------------------------------------------------------------ pointer
 
-        void HandlePointer(Mouse mouse)
+        void HandlePointer(Mouse mouse, float dt)
         {
             if (mouse == null)
             {
-                _dragging = false;
-                SetHovered(-1);
+                _dragging = -1;
+                _hovered = -1;
                 return;
             }
 
             Vector2 pos = mouse.position.ReadValue();
-            bool usable = _wasUnlocked && _group.alpha >= 0.5f;
+            bool usable = _wantVisible && _vis >= 0.5f && !PointerLock.IsLocked;
 
             if (usable && mouse.leftButton.wasPressedThisFrame && Contains(_card, pos))
             {
-                // FirstPersonController / ClickToPlayOverlay (earlier this frame) locked on this press: undo it.
-                if (Cursor.lockState == CursorLockMode.Locked)
-                {
-                    Cursor.lockState = CursorLockMode.None;
-                    Cursor.visible = true;
-                }
-
-                for (int i = 0; i < _buttons.Length; i++)
+                for (int i = 0; i < ButtonCount; i++)
                 {
                     if (!Contains(_buttons[i], pos)) continue;
+                    _pressT[i] = Feel.UIPressSeconds;
                     if (i == FpsButton) SetShowFps(!_showFps);
-                    else if (i == HeadBobButton) ToggleHeadBob();
+                    else if (i == HeadBobButton) { FirstPersonController.HeadBobEnabled = !FirstPersonController.HeadBobEnabled; ApplyToggleLabels(); }
+                    else if (i == RaiseButton) { Feel.RaiseToggle = !Feel.RaiseToggle; ApplyToggleLabels(); }
+                    else if (i == MotionButton) { Feel.ReducedMotion = !Feel.ReducedMotion; ApplyToggleLabels(); }
                     else OnTierClicked(i);
                     break;
                 }
-
-                if (Contains(_slider, pos)) _dragging = true;
+                for (int s = 0; s < SliderCount; s++)
+                    if (Contains(_sliders[s].Root, pos)) _dragging = s;
             }
 
-            if (_dragging)
+            if (_dragging >= 0)
             {
-                if (mouse.leftButton.isPressed && Cursor.lockState != CursorLockMode.Locked)
+                SliderUI sl = _sliders[_dragging];
+                if (mouse.leftButton.isPressed && usable)
                 {
-                    SetSensitivityStep(ScreenToSliderStep(pos), false);
+                    SetSliderStep(_dragging, ScreenToSliderStep(sl, pos), false);
+                    sl.HandleImage.color = UIPalette.Brass;
                 }
                 else
                 {
-                    // Write (PlayerPrefs.Save) once on release, not on every drag step.
-                    _dragging = false;
-                    FirstPersonController.MouseSensitivity = StepToSensitivity(_sensStep);
-                    _sliderHandleImage.color = Palette.Cream;
+                    // Persist once on release, not on every drag step.
+                    CommitSlider(_dragging);
+                    sl.HandleImage.color = UIPalette.Paper;
+                    _dragging = -1;
                 }
             }
 
             int hover = -1;
-            if (usable && Cursor.lockState != CursorLockMode.Locked && Contains(_card, pos))
+            if (usable && Contains(_card, pos))
             {
-                for (int i = 0; i < _buttons.Length; i++)
+                for (int i = 0; i < ButtonCount; i++)
                 {
-                    if (Contains(_buttons[i], pos))
-                    {
-                        hover = i;
-                        break;
-                    }
+                    if (Contains(_buttons[i], pos)) { hover = i; break; }
                 }
             }
-            SetHovered(hover);
-            if (_dragging) _sliderHandleImage.color = Palette.Butter;
+            _hovered = hover;
         }
 
         static bool Contains(RectTransform rt, Vector2 screen)
@@ -291,15 +341,20 @@ namespace Ion.Presentation.Quality
             return rt.gameObject.activeInHierarchy && RectTransformUtility.RectangleContainsScreenPoint(rt, screen, null);
         }
 
-        void SetHovered(int index)
+        /// <summary>Hover darkens over 0.12 s (easeOutQuad); a press dips to 0.97 scale for 0.08 s.</summary>
+        void AnimateButtons(float dt)
         {
-            if (index == _hovered) return;
-            if (_hovered >= 0) _buttonBg[_hovered].color = _buttonColor[_hovered];
-            _hovered = index;
-            if (_hovered >= 0)
+            for (int i = 0; i < ButtonCount; i++)
             {
-                Color c = _buttonColor[_hovered];
-                _buttonBg[_hovered].color = new Color(c.r * 0.88f, c.g * 0.88f, c.b * 0.88f, c.a);
+                float target = i == _hovered ? 1f : 0f;
+                _hoverT[i] = Mathf.MoveTowards(_hoverT[i], target, dt / Feel.UIHoverSeconds);
+                float h = Ease.OutQuad(_hoverT[i]);
+                Color c = _buttonColor[i];
+                _buttonBg[i].color = Color.Lerp(c, new Color(c.r * 0.86f, c.g * 0.86f, c.b * 0.86f, c.a), h);
+                if (_pressT[i] > 0f) _pressT[i] = Mathf.Max(0f, _pressT[i] - dt);
+                float p = _pressT[i] > 0f ? Feel.UIPressScale : 1f;
+                float s = Mathf.Lerp(_buttons[i].localScale.x, p, 1f - Mathf.Exp(-dt * 40f));
+                _buttons[i].localScale = new Vector3(s, s, 1f);
             }
         }
 
@@ -308,7 +363,6 @@ namespace Ion.Presentation.Quality
             _buttonColor[index] = bg;
             _buttonBg[index].color = bg;
             _buttonText[index].color = text;
-            if (index == _hovered) _hovered = -1; // re-tinted on the next hover check
         }
 
         // ------------------------------------------------------------------ actions
@@ -329,14 +383,10 @@ namespace Ion.Presentation.Quality
             ApplyShowFps();
         }
 
-        void ToggleHeadBob()
+        void ApplyToggleLabels()
         {
-            FirstPersonController.HeadBobEnabled = !FirstPersonController.HeadBobEnabled;
-            ApplyHeadBobLabel();
-        }
-
-        void ApplyHeadBobLabel()
-        {
+            _buttonText[RaiseButton].text = Feel.RaiseToggle ? "Raise:  Toggle" : "Raise:  Hold";
+            _buttonText[MotionButton].text = Feel.ReducedMotion ? "Reduced motion:  On" : "Reduced motion:  Off";
             _buttonText[HeadBobButton].text = FirstPersonController.HeadBobEnabled ? "Head bob:  On" : "Head bob:  Off";
         }
 
@@ -345,7 +395,7 @@ namespace Ion.Presentation.Quality
             _fpsRoot.SetActive(_showFps);
             // The tier / render-scale readout is diagnostics: only with the FPS counter on.
             if (_status != null) _status.gameObject.SetActive(_showFps);
-            _buttonText[FpsButton].text = _showFps ? "FPS counter (F3):  On" : "FPS counter (F3):  Off";
+            _buttonText[FpsButton].text = _showFps ? "FPS (F3):  On" : "FPS (F3):  Off";
             _fpsTimer = 0f;
             _fpsAccum = 0f;
             _fpsFrames = 0;
@@ -366,41 +416,55 @@ namespace Ion.Presentation.Quality
             return Mathf.Clamp(Mathf.RoundToInt(t * SliderSteps), 0, SliderSteps);
         }
 
-        int ScreenToSliderStep(Vector2 screen)
+        static int ScreenToSliderStep(SliderUI sl, Vector2 screen)
         {
-            if (!RectTransformUtility.ScreenPointToLocalPointInRectangle(_slider, screen, null, out Vector2 local))
-                return _sensStep;
-            Rect r = _slider.rect;
+            if (!RectTransformUtility.ScreenPointToLocalPointInRectangle(sl.Root, screen, null, out Vector2 local))
+                return sl.Step;
+            Rect r = sl.Root.rect;
             float usable = Mathf.Max(1f, r.width - HandleSize);
             float t = Mathf.Clamp01((local.x - r.xMin - HandleSize * 0.5f) / usable);
             return Mathf.RoundToInt(t * SliderSteps);
         }
 
-        void SyncSensitivityFromController()
+        void SyncSlidersFromSettings()
         {
-            if (_dragging) return;
-            SetSensitivityStep(SensitivityToStep(FirstPersonController.MouseSensitivity), true);
+            if (_dragging >= 0) return;
+            SetSliderStep(SensSlider, SensitivityToStep(FirstPersonController.MouseSensitivity), true);
+            SetSliderStep(MusicSlider, Mathf.RoundToInt(MusicVolume * SliderSteps), true);
+            SetSliderStep(SfxSlider, Mathf.RoundToInt(SfxVolume * SliderSteps), true);
         }
 
-        void SetSensitivityStep(int step, bool force)
+        void SetSliderStep(int index, int step, bool force)
         {
+            SliderUI sl = _sliders[index];
             step = Mathf.Clamp(step, 0, SliderSteps);
-            if (!force && step == _sensStep) return;
-            _sensStep = step;
+            if (!force && step == sl.Step) return;
+            sl.Step = step;
             float t = step / (float)SliderSteps;
 
-            var a = _sliderFill.anchorMax;
+            var a = sl.Fill.anchorMax;
             a.x = t;
-            _sliderFill.anchorMax = a;
-
-            var h = _sliderHandle.anchorMin;
+            sl.Fill.anchorMax = a;
+            var h = sl.Handle.anchorMin;
             h.x = t;
-            _sliderHandle.anchorMin = h;
-            h = _sliderHandle.anchorMax;
+            sl.Handle.anchorMin = h;
+            h = sl.Handle.anchorMax;
             h.x = t;
-            _sliderHandle.anchorMax = h;
+            sl.Handle.anchorMax = h;
 
-            _sensValue.text = _sensLabels[step];
+            sl.Value.text = index == SensSlider ? _sensLabels[step] : step + "%";
+            // Volumes apply live while dragging (cheap; persisted on release).
+            if (!force && index == MusicSlider) { s_Music = t; RaiseVolumes(); }
+            if (!force && index == SfxSlider) { s_Sfx = t; RaiseVolumes(); }
+        }
+
+        void CommitSlider(int index)
+        {
+            float t = _sliders[index].Step / (float)SliderSteps;
+            if (index == SensSlider) FirstPersonController.MouseSensitivity = StepToSensitivity(_sliders[index].Step);
+            else if (index == MusicSlider) MusicVolume = t;
+            else if (index == SfxSlider) SfxVolume = t;
+            PlayerPrefs.Save();
         }
 
         // ------------------------------------------------------------------ refresh
@@ -413,7 +477,7 @@ namespace Ion.Presentation.Quality
             for (int i = 0; i < TierButtonValues.Length; i++)
             {
                 bool on = TierButtonValues[i] == pref;
-                SetButtonColor(i, on ? Palette.Butter : UIUtil.WithAlpha(Palette.Slate, 0.95f), on ? Palette.Ink : Palette.Cream);
+                SetButtonColor(i, on ? UIPalette.Brass : UIUtil.WithAlpha(UIPalette.GraphiteSoft, 0.95f), on ? UIPalette.Graphite : UIPalette.Paper);
             }
         }
 
@@ -470,53 +534,59 @@ namespace Ion.Presentation.Quality
         {
             var root = (RectTransform)transform;
 
-            // FPS readout: top-right, under the HUD film counter. Never blocks the pointer.
+            // FPS readout: top-right. Never blocks the pointer.
             var fpsRt = UIUtil.NewRect("FpsReadout", root);
             UIUtil.Anchor(fpsRt, new Vector2(1f, 1f), new Vector2(1f, 1f), new Vector2(-28f, -76f), new Vector2(380f, 26f));
             _fpsRoot = fpsRt.gameObject;
-            _fpsText = UIUtil.NewText("Text", fpsRt, "-- fps", 18, Palette.Cream, TextAnchor.MiddleRight);
+            _fpsText = UIUtil.NewText("Text", fpsRt, "-- fps", 18, UIPalette.Paper, TextAnchor.MiddleRight);
             UIUtil.Stretch(_fpsText.rectTransform);
 
             // Settings card: bottom-right, clear of the centred click-to-play card.
-            const float w = CardW, h = CardH, pad = 20f;
+            const float w = CardW, h = CardH, pad = 22f;
             _card = UIUtil.NewRect("Settings", root);
-            UIUtil.Anchor(_card, new Vector2(1f, 0f), new Vector2(1f, 0f), new Vector2(-28f, 28f), new Vector2(w, h));
+            UIUtil.Anchor(_card, new Vector2(1f, 0f), new Vector2(1f, 0f), new Vector2(-CardMargin, CardMargin), new Vector2(w, h));
             _group = _card.gameObject.AddComponent<CanvasGroup>();
             _group.interactable = false; // no Selectables; input is handled in HandlePointer
 
-            var bg = UIUtil.NewImage("Content", _card, UIUtil.WithAlpha(Palette.Ink, 0.92f), UIUtil.RoundedSprite, true);
+            var bg = UIUtil.NewImage("Content", _card, UIUtil.WithAlpha(UIPalette.Graphite, 0.94f), UIUtil.RoundedSprite, true);
             bg.raycastTarget = true; // EventSystem.IsPointerOverGameObject() is true over the card
             UIUtil.Stretch(bg.rectTransform);
             _cardContent = bg.gameObject;
             var c = bg.rectTransform;
             float inner = w - pad * 2f;
 
-            var title = UIUtil.NewText("Title", c, "Settings", 26, Palette.Cream, TextAnchor.MiddleLeft, FontStyle.Bold);
+            var title = UIUtil.NewText("Title", c, "Settings", 26, UIPalette.Paper, TextAnchor.MiddleLeft, FontStyle.Bold, false);
             TopLeft(title.rectTransform, pad, -16f, inner, 34f);
 
-            _status = UIUtil.NewText("Status", c, "", 17, Palette.Sky, TextAnchor.MiddleRight);
+            _status = UIUtil.NewText("Status", c, "", 17, UIPalette.Ion, TextAnchor.MiddleRight, FontStyle.Normal, false);
             TopLeft(_status.rectTransform, pad, -16f, inner, 34f);
 
-            var qLabel = UIUtil.NewText("QualityLabel", c, "Quality", 19, Palette.Cream, TextAnchor.MiddleLeft);
-            TopLeft(qLabel.rectTransform, pad, -58f, inner, 26f);
-
+            Label(c, "Quality", pad, -58f, inner);
             const float gap = 8f;
-            float bw = (inner - gap * 3f) / 4f;
+            float bw = (inner - gap * (TierButtonValues.Length - 1)) / TierButtonValues.Length;
             for (int i = 0; i < TierButtonValues.Length; i++)
-                MakeButton(i, c, QualityTier.Name(TierButtonValues[i]), pad + i * (bw + gap), -88f, bw, 40f);
+                MakeButton(i, c, QualityTier.Name(TierButtonValues[i]), pad + i * (bw + gap), -86f, bw, 40f);
 
-            var sLabel = UIUtil.NewText("SensitivityLabel", c, "Mouse sensitivity", 19, Palette.Cream, TextAnchor.MiddleLeft);
-            TopLeft(sLabel.rectTransform, pad, -144f, inner, 26f);
-            _sensValue = UIUtil.NewText("SensitivityValue", c, "", 17, Palette.Sky, TextAnchor.MiddleRight);
-            TopLeft(_sensValue.rectTransform, pad, -144f, inner, 26f);
+            _sliders[SensSlider] = BuildSliderRow(c, "Mouse sensitivity", pad, -138f, inner);
+            _sliders[MusicSlider] = BuildSliderRow(c, "Music", pad, -206f, inner);
+            _sliders[SfxSlider] = BuildSliderRow(c, "Effects", pad, -274f, inner);
 
-            BuildSlider(c, pad, -172f, inner, 30f);
+            float half = (inner - gap) * 0.5f;
+            MakeButton(RaiseButton, c, "", pad, -350f, half, 44f);
+            MakeButton(MotionButton, c, "", pad + half + gap, -350f, half, 44f);
+            MakeButton(HeadBobButton, c, "", pad, -402f, half, 44f);
+            MakeButton(FpsButton, c, "", pad + half + gap, -402f, half, 44f);
+            for (int i = RaiseButton; i < ButtonCount; i++)
+                SetButtonColor(i, UIUtil.WithAlpha(UIPalette.GraphiteSoft, 0.95f), UIPalette.Paper);
 
-            MakeButton(FpsButton, c, "", pad, -226f, inner, 44f);
-            SetButtonColor(FpsButton, UIUtil.WithAlpha(Palette.Slate, 0.95f), Palette.Cream);
+            var hint = UIUtil.NewText("Hint", c, "Shift raises the photo.  Right mouse works too.", 16, UIUtil.WithAlpha(UIPalette.Paper, 0.6f), TextAnchor.MiddleLeft, FontStyle.Normal, false);
+            TopLeft(hint.rectTransform, pad, -458f, inner, 26f);
+        }
 
-            MakeButton(HeadBobButton, c, "", pad, -278f, inner, 44f);
-            SetButtonColor(HeadBobButton, UIUtil.WithAlpha(Palette.Slate, 0.95f), Palette.Cream);
+        static void Label(RectTransform parent, string text, float x, float y, float width)
+        {
+            var t = UIUtil.NewText(text + "Label", parent, text, 19, UIPalette.Paper, TextAnchor.MiddleLeft, FontStyle.Normal, false);
+            TopLeft(t.rectTransform, x, y, width, 26f);
         }
 
         static void TopLeft(RectTransform rt, float x, float y, float width, float height)
@@ -526,9 +596,11 @@ namespace Ion.Presentation.Quality
 
         void MakeButton(int index, RectTransform parent, string label, float x, float y, float width, float height)
         {
-            var bg = UIUtil.NewImage("Button " + index, parent, UIUtil.WithAlpha(Palette.Slate, 0.95f), UIUtil.RoundedSprite, true);
+            var bg = UIUtil.NewImage("Button " + index, parent, UIUtil.WithAlpha(UIPalette.GraphiteSoft, 0.95f), UIUtil.RoundedSprite, true);
             TopLeft(bg.rectTransform, x, y, width, height);
-            var text = UIUtil.NewText("Label", bg.rectTransform, label, 19, Palette.Cream, TextAnchor.MiddleCenter, FontStyle.Bold, false);
+            bg.rectTransform.pivot = new Vector2(0.5f, 0.5f);
+            bg.rectTransform.anchoredPosition = new Vector2(x + width * 0.5f, y - height * 0.5f);
+            var text = UIUtil.NewText("Label", bg.rectTransform, label, 18, UIPalette.Paper, TextAnchor.MiddleCenter, FontStyle.Bold, false);
             UIUtil.Stretch(text.rectTransform);
 
             _buttons[index] = bg.rectTransform;
@@ -537,34 +609,40 @@ namespace Ion.Presentation.Quality
             _buttonColor[index] = bg.color;
         }
 
-        void BuildSlider(RectTransform parent, float x, float y, float width, float height)
+        SliderUI BuildSliderRow(RectTransform parent, string label, float x, float y, float width)
         {
-            _slider = UIUtil.NewRect("Slider", parent);
-            TopLeft(_slider, x, y, width, height);
+            Label(parent, label, x, y, width);
+            var value = UIUtil.NewText(label + "Value", parent, "", 17, UIPalette.Ion, TextAnchor.MiddleRight, FontStyle.Normal, false);
+            TopLeft(value.rectTransform, x, y, width, 26f);
 
-            var track = UIUtil.NewImage("Track", _slider, UIUtil.WithAlpha(Palette.Cream, 0.2f), UIUtil.RoundedSprite, true);
-            HorizontalBar(track.rectTransform, HandleSize * 0.5f, 8f);
+            var sl = new SliderUI { Value = value };
+            sl.Root = UIUtil.NewRect(label + "Slider", parent);
+            TopLeft(sl.Root, x, y - 28f, width, 30f);
 
-            var fill = UIUtil.NewImage("Fill", track.rectTransform, Palette.Butter, UIUtil.RoundedSprite, true);
-            _sliderFill = fill.rectTransform;
-            _sliderFill.anchorMin = Vector2.zero;
-            _sliderFill.anchorMax = new Vector2(0f, 1f);
-            _sliderFill.pivot = new Vector2(0f, 0.5f);
-            _sliderFill.offsetMin = Vector2.zero;
-            _sliderFill.offsetMax = Vector2.zero;
+            var track = UIUtil.NewImage("Track", sl.Root, UIUtil.WithAlpha(UIPalette.Paper, 0.2f), UIUtil.RoundedSprite, true);
+            HorizontalBar(track.rectTransform, HandleSize * 0.5f, 6f);
 
-            var handleArea = UIUtil.NewRect("Handle Area", _slider);
+            var fill = UIUtil.NewImage("Fill", track.rectTransform, UIPalette.Ion, UIUtil.RoundedSprite, true);
+            sl.Fill = fill.rectTransform;
+            sl.Fill.anchorMin = Vector2.zero;
+            sl.Fill.anchorMax = new Vector2(0f, 1f);
+            sl.Fill.pivot = new Vector2(0f, 0.5f);
+            sl.Fill.offsetMin = Vector2.zero;
+            sl.Fill.offsetMax = Vector2.zero;
+
+            var handleArea = UIUtil.NewRect("Handle Area", sl.Root);
             UIUtil.Stretch(handleArea);
             handleArea.offsetMin = new Vector2(HandleSize * 0.5f, 0f);
             handleArea.offsetMax = new Vector2(-HandleSize * 0.5f, 0f);
 
-            _sliderHandleImage = UIUtil.NewImage("Handle", handleArea, Palette.Cream, UIUtil.CircleSprite);
-            _sliderHandle = _sliderHandleImage.rectTransform;
-            _sliderHandle.anchorMin = new Vector2(0f, 0.5f);
-            _sliderHandle.anchorMax = new Vector2(0f, 0.5f);
-            _sliderHandle.pivot = new Vector2(0.5f, 0.5f);
-            _sliderHandle.sizeDelta = new Vector2(HandleSize, HandleSize);
-            _sliderHandle.anchoredPosition = Vector2.zero;
+            sl.HandleImage = UIUtil.NewImage("Handle", handleArea, UIPalette.Paper, UIUtil.CircleSprite);
+            sl.Handle = sl.HandleImage.rectTransform;
+            sl.Handle.anchorMin = new Vector2(0f, 0.5f);
+            sl.Handle.anchorMax = new Vector2(0f, 0.5f);
+            sl.Handle.pivot = new Vector2(0.5f, 0.5f);
+            sl.Handle.sizeDelta = new Vector2(HandleSize, HandleSize);
+            sl.Handle.anchoredPosition = Vector2.zero;
+            return sl;
         }
 
         static void HorizontalBar(RectTransform rt, float inset, float height)

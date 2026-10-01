@@ -1,49 +1,55 @@
 using Ion.Gameplay;
+using Ion.Gameplay.State;
 using Ion.Levels;
-using Ion.Projection;
+using Ion.Presentation.Motion;
 using UnityEngine;
 using UnityEngine.UI;
 
 namespace Ion.Presentation
 {
     /// <summary>
-    /// First-room tutorial: one short line at the top of the screen with five progress dots that advances
-    /// as the player does each step (pick up → hold RMB → line it up → click → R to undo). Only shown in
-    /// room 1 while playing; it finishes for good once the player rewinds, crosses or leaves the room.
+    /// The tutorial line (art bible §7.1, §7.2): one short instruction at the top of the screen in the two
+    /// tutorial zones, chosen from the live game state (not a script), so it is right whatever order the
+    /// player does things in:
+    ///  T1 (zone 0): the ledge is out of reach → falling: [R] rewind → find the button → fetch the photo →
+    ///  [SHIFT] hold it up → stand on the brass marker, line it up, [LMB] place → up the stairs.
+    ///  T2 (zone 1): after a "nothing to rewind": [R] [R] back to the checkpoint → raised: hold [Q] [E] to rotate.
+    /// It never blocks other prompts; HintZones stay quiet while it guides (<see cref="IsGuiding"/>).
     /// </summary>
     public sealed class Onboarding : MonoBehaviour
     {
         public static Onboarding Instance { get; private set; }
 
-        const int Steps = 5;
-        const float FadeOut = 0.14f, FadeIn = 0.22f;
-        const float AlignDistance = 1.1f, AlignYaw = 10f, AlignPitch = 8f;
+        public const int LedgeZone = 0, DarkroomZone = 1;
 
-        static readonly string[] Lines =
-        {
-            "Pick up the photo on the pedestal",
-            "Hold the right mouse button to raise it",
-            "Stand on the marker and line it up with the view",
-            "Click to place it",
-            "Press R to undo. Rewinding gives the photo back",
-        };
-        const string DoneRewound = "That's the trick. Place it again and cross";
-        const string DoneCrossed = "Nicely done";
+        static readonly string L_Ledge = "The ledge is out of reach. Look around";
+        static readonly string L_Fall = UIUtil.Key("R") + "  rewind. It works anytime, anywhere";
+        static readonly string L_Button = "That bridge won't hold. Find another way across.   " + UIUtil.Key("E") + " presses buttons";
+        static readonly string L_Fetch = "Fetch the photo on the island";
+        static readonly string L_Raise = UIUtil.Key("SHIFT") + "  hold up the photo";
+        static readonly string L_Align = "Stand on the brass " + UIUtil.Key(" ") + " marker, line it up, then " + UIUtil.Key("LMB") + " place";
+        static readonly string L_Placed = "Up you go.   " + UIUtil.Key("R") + " undoes anything, anytime";
+        static readonly string L_Double = UIUtil.Key("R") + " " + UIUtil.Key("R") + "  quickly: back to the last checkpoint";
+        static readonly string L_DoubleDone = "Checkpoints are set as you enter each place";
+        static readonly string L_Rotate = "hold " + UIUtil.Key("Q") + " " + UIUtil.Key("E") + "  to rotate the photo";
 
         RectTransform _pill;
         CanvasGroup _group;
         Text _text;
-        readonly Image[] _dots = new Image[Steps];
 
-        int _step = -1;          // shown step (0..4), 5 = finishing message
         string _shown;           // text currently displayed
         string _pending;         // text to display after the fade-out
         float _fade;             // 0..1 alpha driver
-        float _slide;
+        float _rise;
         bool _swapping;
-        bool _placed, _pickedUp, _finished;
-        float _finishTimer;
-        ProjectionSystem _projection;
+
+        // Progress (from gameplay events).
+        bool _fallRecovered, _pressedSwitch, _placed, _nothingInT2, _checkpointRestored, _rotated;
+        float _doneTimer = -1f;
+        string _doneLine;
+        WorldHistory _history;
+        PhotoHolder _holder;
+        float _lastRoll;
 
         void Awake()
         {
@@ -57,185 +63,187 @@ namespace Ion.Presentation
 
         void OnDestroy()
         {
-            if (_projection != null)
-            {
-                _projection.Placed -= OnPlaced;
-                _projection.Rewound -= OnRewound;
-            }
+            Unsubscribe();
             if (Instance == this) Instance = null;
         }
 
         /// <summary>Starts the tutorial over (game restart).</summary>
         public void ResetTutorial()
         {
-            _step = -1;
             _shown = _pending = null;
             _fade = 0f;
             _swapping = false;
-            _placed = _pickedUp = _finished = false;
-            _finishTimer = 0f;
+            _fallRecovered = _pressedSwitch = _placed = _nothingInT2 = _checkpointRestored = _rotated = false;
+            _doneTimer = -1f;
+            _doneLine = null;
             _group.alpha = 0f;
         }
 
         /// <summary>
-        /// True while the room 1 tutorial is running (not finished): the tutorial line is then the only
-        /// instruction on screen, so the HUD's bottom prompt, the marker hint toasts and the room 1 title
-        /// toast stay quiet.
+        /// True while a tutorial line is guiding (zones 0 and 1, not finished): HintZones and room title toasts
+        /// stay quiet so the line is the only instruction.
         /// </summary>
-        public static bool IsGuiding => Instance != null && Instance.isActiveAndEnabled && !Instance._finished && InFirstRoom();
+        public static bool IsGuiding => Instance != null && Instance.isActiveAndEnabled && Instance._shown != null && Instance._fade > 0.01f;
 
-        /// <summary>Current step (0-based) or -1 when hidden / finished (tests, debug).</summary>
-        public int Step => _finished && _finishTimer <= 0f ? -1 : _step;
+        /// <summary>Current line (tests, debug); null when hidden.</summary>
+        public string Line => _fade > 0.01f ? _shown : null;
 
-        void OnPlaced()
+        // ---------------------------------------------------------------- events
+
+        void Subscribe()
         {
-            if (GameBootstrap.Restarting) return;
-            if (InFirstRoom()) _placed = true;
+            var h = WorldHistory.Instance;
+            if (h == _history) return;
+            Unsubscribe();
+            _history = h;
+            if (h == null) return;
+            h.FallRecovered += OnFallRecovered;
+            h.Pushed += OnPushed;
+            h.Rewound += OnRewound;
+            h.CheckpointRestored += OnCheckpointRestored;
         }
 
-        void OnRewound()
+        void Unsubscribe()
         {
-            if (GameBootstrap.Restarting || _finished || !_placed || !InFirstRoom()) return;
-            Finish(DoneRewound, 4f);
+            if (_history == null) return;
+            _history.FallRecovered -= OnFallRecovered;
+            _history.Pushed -= OnPushed;
+            _history.Rewound -= OnRewound;
+            _history.CheckpointRestored -= OnCheckpointRestored;
+            _history = null;
         }
 
-        static bool InFirstRoom()
+        static int Zone()
         {
             var game = GameBootstrap.Instance;
-            return game != null && game.CurrentRoom == 0;
+            if (game != null) return game.CurrentRoom;
+            var p = FirstPersonController.Current;
+            return p != null ? ZoneInfo.ZoneOf(p.transform.position) : -1;
         }
 
-        void Finish(string message, float seconds)
+        void OnFallRecovered()
         {
-            _finished = true;
-            _finishTimer = seconds;
-            Show(Steps, message);
+            if (Zone() == LedgeZone) _fallRecovered = true;
         }
+
+        void OnPushed(WorldChange c)
+        {
+            if (GameBootstrap.Restarting) return;
+            if (Zone() != LedgeZone) return;
+            if (c.Kind == ChangeKind.Switch) _pressedSwitch = true;
+            if (c.Kind == ChangeKind.Placement && !_placed)
+            {
+                _placed = true;
+                _doneTimer = 5f;
+                _doneLine = L_Placed;
+            }
+        }
+
+        void OnRewound(RewindResult r)
+        {
+            if (r == RewindResult.Nothing && Zone() == DarkroomZone) _nothingInT2 = true;
+        }
+
+        void OnCheckpointRestored(Checkpoint cp)
+        {
+            if (Zone() != DarkroomZone || _checkpointRestored) return;
+            _checkpointRestored = true;
+            _doneTimer = 3.5f;
+            _doneLine = L_DoubleDone;
+        }
+
+        // ---------------------------------------------------------------- update
 
         void Update()
         {
-            if (_projection == null)
-            {
-                var ps = ProjectionSystem.Instance;
-                if (ps != null)
-                {
-                    _projection = ps;
-                    ps.Placed += OnPlaced;
-                    ps.Rewound += OnRewound;
-                }
-            }
-
+            Subscribe();
             float dt = Mathf.Min(Time.unscaledDeltaTime, 0.05f);
-            var game = GameBootstrap.Instance;
             var player = FirstPersonController.Current;
-            bool playing = Cursor.lockState == CursorLockMode.Locked || Application.isBatchMode;
-            bool visible = game != null && player != null && player.InputEnabled && playing;
+            bool playing = PointerLock.IsLocked || PointerLock.IsSimulated || Application.isBatchMode;
+            string line = null;
+            if (player != null && player.InputEnabled && playing)
+                line = Decide(player, dt);
 
-            if (game != null && game.CurrentRoom != 0 && !_finished)
+            if (line != _shown || _swapping)
             {
-                // Left room 1 (teleporter / debug): the tutorial is over.
-                _finished = true;
-                _finishTimer = 0f;
-            }
-
-            if (_finished)
-            {
-                _finishTimer -= dt;
-                if (_finishTimer <= 0f) visible = false;
-            }
-            else if (visible)
-            {
-                DecideStep(game, player);
-            }
-
-            Animate(dt, visible);
-        }
-
-        void DecideStep(GameBootstrap game, FirstPersonController player)
-        {
-            var inventory = player.GetComponent<PhotoInventory>();
-            var holder = player.GetComponent<PhotoHolder>();
-            if (inventory != null && inventory.Count > 0) _pickedUp = true;
-
-            RoomContext ctx = game.Rooms.Count > 0 ? game.Rooms[0] : null;
-            if (_placed)
-            {
-                // Crossed the chasm without rewinding: wrap up.
-                if (ctx != null && ctx.WorldRoot.InverseTransformPoint(player.transform.position).z > 13.5f)
+                if (line != _pending || !_swapping)
                 {
-                    Finish(DoneCrossed, 2.5f);
-                    return;
+                    _pending = line;
+                    _swapping = line != _shown;
                 }
-                Show(4, Lines[4]);
-                return;
             }
-            if (!_pickedUp) { Show(0, Lines[0]); return; }
-            bool raised = holder != null && holder.IsRaised;
-            if (!raised) { Show(1, Lines[1]); return; }
-            Show(Aligned(ctx, player) ? 3 : 2, Aligned(ctx, player) ? Lines[3] : Lines[2]);
+            Animate(dt);
         }
 
-        static bool Aligned(RoomContext ctx, FirstPersonController player)
+        string Decide(FirstPersonController player, float dt)
         {
-            if (ctx == null) return true;
-            RoomSolution sol = ctx.Room.FindSolution("place");
-            if (sol == null) return true;
-            Vector3 d = player.transform.position - ctx.SolutionFeet(sol);
-            d.y = 0f;
-            return d.magnitude <= AlignDistance &&
-                   Mathf.Abs(Mathf.DeltaAngle(player.Yaw, ctx.SolutionYaw(sol))) <= AlignYaw &&
-                   Mathf.Abs(player.Pitch - sol.Pitch) <= AlignPitch;
+            int zone = Zone();
+            if (zone != LedgeZone && zone != DarkroomZone) return null;
+
+            if (_doneTimer > 0f)
+            {
+                _doneTimer -= dt;
+                return _doneLine;
+            }
+
+            var tracker = player.GetComponent<SafePoseTracker>();
+            if (tracker != null && tracker.IsFalling) return L_Fall;
+
+            if (_holder == null) _holder = player.GetComponent<PhotoHolder>();
+            var inventory = player.GetComponent<PhotoInventory>();
+            bool raised = _holder != null && _holder.IsRaised;
+
+            if (zone == LedgeZone)
+            {
+                if (_placed) return null;
+                if (raised) return L_Align;
+                if (inventory != null && inventory.Count > 0) return L_Raise;
+                if (_pressedSwitch) return L_Fetch;
+                if (_fallRecovered) return L_Button;
+                return L_Ledge;
+            }
+
+            // Darkroom.
+            if (_nothingInT2 && !_checkpointRestored) return L_Double;
+            if (raised && !_rotated)
+            {
+                if (_holder.RollDegrees != _lastRoll) _rotated = true;
+                _lastRoll = _holder.RollDegrees;
+                return _rotated ? null : L_Rotate;
+            }
+            if (_holder != null) _lastRoll = _holder.RollDegrees;
+            return null;
         }
 
-        void Show(int step, string text)
+        void Animate(float dt)
         {
-            if (text == _shown && !_swapping) { _step = step; return; }
-            if (text == _pending && _swapping) return;
-            _pending = text;
-            _swapping = true;
-            _step = step;
-        }
-
-        void Animate(float dt, bool visible)
-        {
+            float half = Feel.PromptCrossfadeSeconds;
             if (_swapping && (_fade <= 0.001f || _shown == null))
             {
                 _shown = _pending;
                 _swapping = false;
-                _text.text = _shown;
-                _slide = 1f;
-                LayoutPill();
+                if (_shown != null)
+                {
+                    _text.text = _shown;
+                    LayoutPill();
+                    _rise = 1f;
+                }
             }
-            float target = visible && !_swapping && _shown != null ? 1f : 0f;
-            _fade = Mathf.MoveTowards(_fade, target, dt / (target > _fade ? FadeIn : FadeOut));
-            _slide = Mathf.MoveTowards(_slide, 0f, dt / 0.3f);
+            float target = !_swapping && _shown != null ? 1f : 0f;
+            float speed = target > _fade ? Feel.PanelInSeconds : half;
+            _fade = Mathf.MoveTowards(_fade, target, dt / speed);
+            _rise = Mathf.MoveTowards(_rise, 0f, dt / Feel.PanelInSeconds);
 
-            _group.alpha = _fade;
-            float e = _slide * _slide;
-            _pill.anchoredPosition = new Vector2(0f, -18f + e * 10f);
+            _group.alpha = target > 0f ? Ease.OutCubic(_fade) : Ease.InQuad(_fade);
+            _pill.anchoredPosition = new Vector2(0f, -22f + Ease.InQuad(_rise) * Feel.PanelRisePx);
             bool active = _fade > 0.001f;
             if (_pill.gameObject.activeSelf != active) _pill.gameObject.SetActive(active);
         }
 
         void LayoutPill()
         {
-            for (int i = 0; i < Steps; i++)
-            {
-                bool done = i < _step || _step >= Steps;
-                bool current = i == _step;
-                _dots[i].color = current ? Palette.Butter
-                    : done ? UIUtil.WithAlpha(Palette.Butter, 0.75f)
-                    : UIUtil.WithAlpha(Palette.Cream, 0.3f);
-                _dots[i].rectTransform.sizeDelta = current ? new Vector2(11f, 11f) : new Vector2(8f, 8f);
-            }
-            float dotsW = Steps * 16f;
             float textW = _text.preferredWidth;
-            float w = 26f + dotsW + 14f + textW + 28f;
-            _pill.sizeDelta = new Vector2(w, 44f);
-            for (int i = 0; i < Steps; i++)
-                _dots[i].rectTransform.anchoredPosition = new Vector2(26f + i * 16f + 4f, 0f);
-            _text.rectTransform.anchoredPosition = new Vector2(26f + dotsW + 14f, 0f);
-            _text.rectTransform.sizeDelta = new Vector2(textW + 4f, 44f);
+            _pill.sizeDelta = new Vector2(textW + 56f, 48f);
         }
 
         void Build()
@@ -243,28 +251,26 @@ namespace Ion.Presentation
             var root = (RectTransform)transform;
             UIUtil.Stretch(root);
 
-            var bg = UIUtil.NewImage("Tutorial", root, UIUtil.WithAlpha(Palette.Ink, 0.66f), UIUtil.RoundedSprite, true);
+            var bg = UIUtil.NewImage("Tutorial", root, UIUtil.WithAlpha(UIPalette.Graphite, 0.78f), UIUtil.RoundedSprite, true);
             _pill = bg.rectTransform;
-            UIUtil.Anchor(_pill, new Vector2(0.5f, 1f), new Vector2(0.5f, 1f), new Vector2(0f, -18f), new Vector2(400f, 44f));
+            UIUtil.Anchor(_pill, new Vector2(0.5f, 1f), new Vector2(0.5f, 1f), new Vector2(0f, -22f), new Vector2(400f, 48f));
             _group = bg.gameObject.AddComponent<CanvasGroup>();
             _group.blocksRaycasts = false;
             _group.interactable = false;
             _group.alpha = 0f;
 
-            for (int i = 0; i < Steps; i++)
-            {
-                var dot = UIUtil.NewImage("Dot" + i, _pill, UIUtil.WithAlpha(Palette.Cream, 0.3f), UIUtil.CircleSprite);
-                var rt = dot.rectTransform;
-                rt.anchorMin = rt.anchorMax = new Vector2(0f, 0.5f);
-                rt.pivot = new Vector2(0.5f, 0.5f);
-                rt.sizeDelta = new Vector2(8f, 8f);
-                _dots[i] = dot;
-            }
+            // A thin Ion rule on the left: "this is the thing to do".
+            var rule = UIUtil.NewImage("Rule", _pill, UIPalette.Ion);
+            var rrt = rule.rectTransform;
+            rrt.anchorMin = new Vector2(0f, 0.5f);
+            rrt.anchorMax = new Vector2(0f, 0.5f);
+            rrt.pivot = new Vector2(0f, 0.5f);
+            rrt.anchoredPosition = new Vector2(16f, 0f);
+            rrt.sizeDelta = new Vector2(3f, 22f);
 
-            _text = UIUtil.NewText("Text", _pill, "", 21, Palette.White, TextAnchor.MiddleLeft, FontStyle.Bold, false);
-            var trt = _text.rectTransform;
-            trt.anchorMin = trt.anchorMax = new Vector2(0f, 0.5f);
-            trt.pivot = new Vector2(0f, 0.5f);
+            _text = UIUtil.NewText("Text", _pill, "", 21, UIPalette.Paper, TextAnchor.MiddleCenter, FontStyle.Bold, false);
+            UIUtil.Stretch(_text.rectTransform);
+            _text.rectTransform.offsetMin = new Vector2(12f, 0f);
             _pill.gameObject.SetActive(false);
         }
     }

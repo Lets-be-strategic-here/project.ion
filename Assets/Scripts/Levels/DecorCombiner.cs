@@ -46,6 +46,8 @@ namespace Ion.Levels
             public readonly List<Vector3> P = new List<Vector3>(1024);
             public readonly List<Vector3> N = new List<Vector3>(1024);
             public readonly List<Color32> C = new List<Color32>(1024);
+            /// <summary>UV0 (pattern space + PatternCode): copied unchanged, or the world position at combine time for sources without pattern space.</summary>
+            public readonly List<Vector4> U = new List<Vector4>(1024);
             public readonly List<int> T = new List<int>(2048);
             public string Name;
             // One entry per merged source renderer (see MeshElements).
@@ -57,6 +59,7 @@ namespace Ion.Levels
         static readonly List<Vector3> s_n = new List<Vector3>(256);
         static readonly List<int> s_t = new List<int>(512);
         static readonly List<Color32> s_c = new List<Color32>(256);
+        static readonly List<Vector4> s_u = new List<Vector4>(256);
 
         /// <summary>Combines the decor under <paramref name="root"/>. Returns the number of merged source renderers.</summary>
         public static int Combine(Transform root)
@@ -99,20 +102,21 @@ namespace Ion.Levels
                 bool hasN = s_n.Count == s_v.Count;
                 mesh.GetColors(s_c);
                 bool hasC = s_c.Count == s_v.Count;
+                mesh.GetUVs(0, s_u);
+                bool hasU = s_u.Count == s_v.Count && s_v.Count > 0;
+                // A source with a real pattern space keeps it (UV0 is data); one without (Geo's unit meshes carry
+                // zeros) gets its world position at combine time, so every merged Sliceable has pattern space.
+                bool srcPattern = false;
+                if (hasU) for (int i = 0; i < s_u.Count && !srcPattern; i++) srcPattern = s_u[i].x != 0f || s_u[i].y != 0f || s_u[i].z != 0f;
+                Matrix4x4 toWorld = info.transform.localToWorldMatrix;
 
                 // Per-instance tint from the object's root-local position (identical for world and diorama).
-                Vector3 op = toRoot.MultiplyPoint3x4(info.transform.position);
-                float h1 = Hash(op.x * 0.731f + op.z * 1.379f + op.y * 0.417f);
-                float h2 = Hash(op.x * 1.913f - op.z * 0.613f + 7.1f);
-                float tv = (h1 * 2f - 1f) * info.Tint;
-                float th = (h2 * 2f - 1f) * info.Tint * 0.6f;
-                float baseTint = 1f - 1.6f * info.Tint;
+                DecorTint tint = TintFor(info, toRoot.MultiplyPoint3x4(info.transform.position));
                 bool mirrored = m.determinant < 0f;
 
                 int start = g.P.Count;
                 int tStart = g.T.Count;
                 Vector3 bMin = new Vector3(float.MaxValue, float.MaxValue, float.MaxValue), bMax = -bMin;
-                float invH = 1f / Mathf.Max(0.01f, info.Height);
                 for (int i = 0; i < s_v.Count; i++)
                 {
                     Vector3 p = m.MultiplyPoint3x4(s_v[i]);
@@ -120,18 +124,13 @@ namespace Ion.Levels
                     bMin = Vector3.Min(bMin, p);
                     bMax = Vector3.Max(bMax, p);
                     g.N.Add(hasN ? nm.MultiplyVector(s_n[i]).normalized : Vector3.up);
-
-                    float t = Mathf.Clamp01((p.y - info.BaseY) * invH);
-                    float ao = Mathf.Lerp(info.AoMin, 1f, Mathf.Sqrt(info.AoFromTop ? 1f - t : t));
-                    // Colours are multipliers (<= 1): centre the jitter just below white.
-                    float r = ao * (baseTint + tv + th), gg = ao * (baseTint + tv), b = ao * (baseTint + tv - th);
-                    if (hasC)
+                    g.C.Add(Shade(info, tint, p.y, hasC ? s_c[i] : new Color32(255, 255, 255, 255)));
+                    if (srcPattern) g.U.Add(s_u[i]);
+                    else
                     {
-                        // The source mesh's own colours (e.g. the contact disc's radial gradient) multiply in.
-                        Color32 sc = s_c[i];
-                        r *= sc.r / 255f; gg *= sc.g / 255f; b *= sc.b / 255f;
+                        Vector3 w = toWorld.MultiplyPoint3x4(s_v[i]);
+                        g.U.Add(new Vector4(w.x, w.y, w.z, hasU ? s_u[i].w : 0f));
                     }
-                    g.C.Add(new Color32(ToByte(r), ToByte(gg), ToByte(b), info.SwayWeight ? ToByte(t) : (byte)255));
                 }
                 for (int i = 0; i + 2 < s_t.Count; i += 3)
                 {
@@ -176,6 +175,8 @@ namespace Ion.Levels
                 mesh.SetVertices(g.P);
                 mesh.SetNormals(g.N);
                 mesh.SetColors(g.C);
+                bool groupUV = g.U.Count == g.P.Count;
+                if (groupUV) mesh.SetUVs(0, g.U);
                 mesh.SetTriangles(g.T, 0);
                 mesh.RecalculateBounds();
                 mesh.UploadMeshData(false); // readable: the slicer and MeshCollider read it
@@ -192,13 +193,49 @@ namespace Ion.Levels
                 var el = go.AddComponent<MeshElements>();
                 el.Set(mesh, g.ElemV0.ToArray(), g.ElemVN.ToArray(), g.ElemT0.ToArray(), g.ElemTN.ToArray(), g.ElemBounds.ToArray());
                 // CPU copies for the slicer (no GPU readback on the first cut).
-                el.SetData(g.P.ToArray(), g.N.ToArray(), g.C.ToArray(), g.T.ToArray());
+                el.SetData(g.P.ToArray(), g.N.ToArray(), g.C.ToArray(), groupUV ? g.U.ToArray() : null, g.T.ToArray());
             }
             s_v.Clear();
             s_n.Clear();
             s_t.Clear();
             s_c.Clear();
+            s_u.Clear();
             return merged;
+        }
+
+        /// <summary>Per-instance tint of a decor object (shared with Arch.Bake, which merges Decor too).</summary>
+        internal struct DecorTint
+        {
+            public float Value, Hue, Base;
+        }
+
+        /// <summary>Tint from the object's root-local position (identical for a world root and its diorama copy).</summary>
+        internal static DecorTint TintFor(Decor info, Vector3 rootLocalObjectPosition)
+        {
+            Vector3 op = rootLocalObjectPosition;
+            float h1 = Hash(op.x * 0.731f + op.z * 1.379f + op.y * 0.417f);
+            float h2 = Hash(op.x * 1.913f - op.z * 0.613f + 7.1f);
+            return new DecorTint
+            {
+                Value = (h1 * 2f - 1f) * info.Tint,
+                Hue = (h2 * 2f - 1f) * info.Tint * 0.6f,
+                Base = 1f - 1.6f * info.Tint,
+            };
+        }
+
+        /// <summary>
+        /// Vertex colour of a decor vertex at root-local height <paramref name="y"/>: contact shade gradient, tint
+        /// jitter, the source colour multiplied in, and the sway weight (0 at the base, 1 at the top) in alpha.
+        /// </summary>
+        internal static Color32 Shade(Decor info, DecorTint k, float y, Color32 source)
+        {
+            float t = Mathf.Clamp01((y - info.BaseY) / Mathf.Max(0.01f, info.Height));
+            float ao = Mathf.Lerp(info.AoMin, 1f, Mathf.Sqrt(info.AoFromTop ? 1f - t : t));
+            // Colours are multipliers (<= 1): centre the jitter just below white.
+            float r = ao * (k.Base + k.Value + k.Hue), g = ao * (k.Base + k.Value), b = ao * (k.Base + k.Value - k.Hue);
+            // The source mesh's own colours (e.g. the contact disc's radial gradient) multiply in.
+            r *= source.r / 255f; g *= source.g / 255f; b *= source.b / 255f;
+            return new Color32(ToByte(r), ToByte(g), ToByte(b), info.SwayWeight ? ToByte(t) : (byte)255);
         }
 
         static byte ToByte(float v) => (byte)Mathf.Clamp(Mathf.RoundToInt(v * 255f), 0, 255);

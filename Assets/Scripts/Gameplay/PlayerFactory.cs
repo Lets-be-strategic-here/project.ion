@@ -1,3 +1,4 @@
+using Ion.Gameplay.State;
 using UnityEngine;
 using UnityEngine.Rendering.Universal;
 
@@ -14,7 +15,8 @@ namespace Ion.Gameplay
         /// <summary>
         /// Creates the player at <paramref name="position"/> (feet) facing <paramref name="yaw"/> degrees:
         /// CharacterController + FirstPersonController, a child MainCamera (fov 70, near 0.05),
-        /// PhotoInventory, PhotoHolder, InstantCamera and PlayerInteractor. All on layer 8 (Player).
+        /// PhotoInventory, PhotoHolder, InstantCamera, PlayerInteractor, SafePoseTracker and RewindController
+        /// (and makes sure the scene has a WorldHistory). All on layer 8 (Player).
         /// </summary>
         public static FirstPersonController Create(Vector3 position, float yaw)
         {
@@ -65,6 +67,9 @@ namespace Ion.Gameplay
             root.AddComponent<InstantCamera>();
             root.AddComponent<PhotoHolder>();
             root.AddComponent<PlayerInteractor>();
+            root.AddComponent<SafePoseTracker>();
+            root.AddComponent<RewindController>();
+            _ = WorldHistory.Instance; // created on demand; touch it so it exists before the first change
 
             return fpc;
         }

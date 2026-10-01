@@ -9,7 +9,7 @@ namespace Ion.Gameplay
     /// Trigger volume that invokes <see cref="OnEnter"/> when the player walks in.
     /// Uses the object's own trigger collider, or adds a box trigger of <see cref="TriggerSize"/>
     /// (bottom-centred on the transform). Physics trigger events plus a bounds check as a fallback;
-    /// fires once per entry. The move itself happens at the peak of a short fade-to-white
+    /// fires once per entry. The move itself happens at the peak of a fade to Frost
     /// (<see cref="Ion.Presentation.ScreenFx.Transition"/>).
     ///
     /// A teleporter is an Interactable, so a photo of it carries a whole copy (a clone of the object). A
@@ -27,7 +27,11 @@ namespace Ion.Gameplay
         {
             s_Actions.Clear();
             s_NextId = 0;
+            AnyFired = null;
         }
+
+        /// <summary>Any teleporter fired (audio: teleport_travel; the move happens at the fade's peak).</summary>
+        public static event Action<Teleporter> AnyFired;
 
         [SerializeField, HideInInspector] int _actionId;
 
@@ -47,6 +51,8 @@ namespace Ion.Gameplay
 
         public Vector3 TriggerSize = new Vector3(1.6f, 2.4f, 1.6f);
         public float Cooldown = 1f;
+        /// <summary>An unpowered teleporter does nothing (a <see cref="PowerTarget"/> may drive this).</summary>
+        public bool Powered = true;
 
         Collider _trigger;
         bool _physicsOverlap;
@@ -123,10 +129,12 @@ namespace Ion.Gameplay
 
         void Fire()
         {
-            if (Time.time < _cooldownUntil) return;
+            if (!Powered || Time.time < _cooldownUntil) return;
             _cooldownUntil = Time.time + Cooldown;
             FireCount++;
-            // Fade to white, move at the peak, fade back (instant when there is no UI).
+            try { AnyFired?.Invoke(this); }
+            catch (Exception e) { Debug.LogException(e); }
+            // Fade to Frost (with an FOV swell), move during the hold, fade back (instant when there is no UI).
             Ion.Presentation.ScreenFx.RunTransition(OnEnter);
         }
     }

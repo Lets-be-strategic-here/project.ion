@@ -11,7 +11,7 @@ namespace Ion.Presentation
     /// </summary>
     public sealed class AmbienceMotes : MonoBehaviour
     {
-        static readonly int[] k_TierCounts = { 30, 90, 180 };
+        static readonly int[] k_TierCounts = { 30, 90, 180, 320 };
         public static int CountForTier(int tier) => k_TierCounts[Mathf.Clamp(tier, 0, k_TierCounts.Length - 1)];
 
         const float LifetimeMin = 6f, LifetimeMax = 11f;

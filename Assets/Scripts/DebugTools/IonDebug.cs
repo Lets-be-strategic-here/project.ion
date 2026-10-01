@@ -2,6 +2,7 @@ using System;
 using System.Globalization;
 using System.Text;
 using Ion.Gameplay;
+using Ion.Gameplay.State;
 using Ion.Levels;
 using Ion.Projection;
 using UnityEngine;
@@ -11,27 +12,34 @@ namespace Ion.DebugTools
     /// <summary>
     /// Debug / automation harness. Installs itself after the first scene loads as a persistent GameObject
     /// named exactly "IonDebug", so a web page can drive the game with
-    /// <c>unityInstance.SendMessage("IonDebug", "GoTo", "bridge:place")</c>. Every action goes through the
-    /// same components a player uses (FirstPersonController, PhotoHolder, InstantCamera, ProjectionSystem).
+    /// <c>unityInstance.SendMessage("IonDebug", "GoTo", "t1:place")</c>. Every action goes through the
+    /// same components a player uses (FirstPersonController, PhotoHolder, InstantCamera, Switch, WorldHistory).
     /// Each method takes one string (SendMessage contract) and is also callable from C# (PlayMode tests).
     ///
-    ///   GoTo("room:spot")   room = 1-based number or name ("bridge", "stairs"...); spot = "spawn" (default)
-    ///                       or a <see cref="RoomSolution"/> name ("place", "snap", "far", "exit", ...).
-    ///                       Sets the current room, teleports the feet there and sets the solution view.
+    ///   GoTo("zone:spot")   zone = 0-based index, key ("t1", "t2", "hub", "stairs", "camera", "gallery") or a
+    ///                       name fragment; spot = "spawn" (default) or a <see cref="RoomSolution"/> name ("place",
+    ///                       "n.pickup", "far", ...). Enters the zone like a teleporter (zone-entry checkpoint),
+    ///                       then puts the feet on the spot with the spot's view.
+    ///   Zone("name")        = GoTo("name") (the zone's arrival).                         alias: zone
     ///   Look("yaw,pitch")   degrees (yaw 0 = +Z, pitch positive = down).
     ///   GiveAll("")         every pre-made photo into the inventory + unlocks the camera (3 film min).
-    ///   Select("i")         inventory index (0-based) or a label substring ("Bridge", "Snapshot").
+    ///   Select("i")         inventory index (0-based) or a label substring ("Ledge", "Snapshot").
     ///   Raise("") / Lower("")   hold the selected photo up / put it down.
-    ///   Rotate("+1|-1")     ±90° roll steps (+1 = Q, -1 = E).
+    ///   Rotate("+1|-1")     ±90° roll steps, instant (+1 = Q, -1 = E).
+    ///   RotateHold("+1|-1|0") hold Q (+1) / E (-1) through the player's eased rotation; 0 releases.
     ///   Place("")           places the held photo (raises it first if needed).
-    ///   Rewind("")          undoes the last placement.
+    ///   Rewind("")          single R through WorldHistory (lowers a raised photo first).    alias: rewind
+    ///   Rewind2("")         R R: back to the last checkpoint.                                alias: rewind2
+    ///   Press("")           presses the powered switch in reach (nearest, in view) like E.    alias: press
+    ///   Checkpoint("id")    sets a checkpoint at the current pose (id default "debug").     alias: checkpoint
     ///   Snap("")            instant-camera photo from the current view (camera must be unlocked).
-    ///   Walk("x,z,seconds") holds movement input (x = strafe right, z = forward, -1..1) for some seconds.
-    ///   WalkTo("x,z[,s]")   walks toward a point local to the current room (or WalkTo("far"): a spot name).
+    ///   Walk("x,y,z[,s]")   walks (real movement input) to a point local to the current zone.  alias: walk
+    ///   Move("x,z,seconds") holds movement input (x = strafe right, z = forward, -1..1) for some seconds.
+    ///   WalkTo("x,z[,s]")   walks toward a zone-local point (or WalkTo("far"): a spot name).
     ///   State("")           logs "[IonDebug] {json}".
-    ///   Quality("-1|0|1|2") sets the quality preference (Auto / Low / Med / High).
-    ///   Spectate("x,y,z,yaw,pitch")  freezes the player and puts the camera at a room-local pose
-    ///                       (screenshots of islands from outside); Spectate("") hands it back.
+    ///   Quality("-1|0|1|2|3") sets the quality preference (Auto / Low / Med / High / Ultra).
+    ///   Spectate("x,y,z,yaw,pitch")  freezes the player and puts the camera at a zone-local pose
+    ///                       (screenshots from outside); Spectate("") hands it back.
     ///   Place logs "[IonDebug] Place took N ms" (the whole cut + paste, measured around PhotoHolder.Place).
     ///
     /// Availability: always in the Editor (Play mode, PlayMode tests). In a Web player build the harness
@@ -141,15 +149,20 @@ namespace Ion.DebugTools
             return result;
         }
 
-        /// <summary>Room index (0-based) from "2" (1-based) or a name fragment; -1 if not found.</summary>
+        /// <summary>
+        /// Zone index (0-based) from a key ("t1", "hub"), a 0-based index ("2") or a title / type-name fragment;
+        /// -1 if not found. Empty = the current zone.
+        /// </summary>
         public static int FindRoom(string key)
         {
             var game = Game;
             if (game == null) return -1;
             key = (key ?? string.Empty).Trim();
             if (key.Length == 0) return game.CurrentRoom;
+            for (int i = 0; i < game.Rooms.Count; i++)
+                if (string.Equals(game.Rooms[i].Room.Key, key, StringComparison.OrdinalIgnoreCase)) return i;
             if (int.TryParse(key, NumberStyles.Integer, Inv, out int n))
-                return n >= 1 && n <= game.Rooms.Count ? n - 1 : -1;
+                return n >= 0 && n < game.Rooms.Count ? n : -1;
             for (int i = 0; i < game.Rooms.Count; i++)
             {
                 Room room = game.Rooms[i].Room;
@@ -189,17 +202,17 @@ namespace Ion.DebugTools
             if (spot.Length > 0 && !spot.Equals("spawn", StringComparison.OrdinalIgnoreCase))
             {
                 sol = ctx.Room.FindSolution(spot);
-                if (sol == null) { Warn("GoTo: room " + (index + 1) + " has no spot '" + spot + "'"); return false; }
+                if (sol == null) { Warn("GoTo: zone " + ctx.Room.Key + " has no spot '" + spot + "'"); return false; }
             }
 
-            game.GoToRoom(index); // current room, checkpoint and arrival toast, like a teleporter
+            game.GoToRoom(index); // current zone, mood, zone-entry checkpoint and arrival toast, like a teleporter
             if (sol != null)
             {
                 player.Teleport(ctx.SolutionFeet(sol), ctx.SolutionYaw(sol));
                 player.SetLook(ctx.SolutionYaw(sol), sol.Pitch);
             }
             Physics.SyncTransforms();
-            Log("GoTo room " + (index + 1) + " spot '" + (sol != null ? sol.Name : "spawn") + "'");
+            Log("GoTo zone " + ctx.Room.Key + " spot '" + (sol != null ? sol.Name : "spawn") + "'");
             return true;
         }
 
@@ -281,6 +294,14 @@ namespace Ion.DebugTools
             holder.Rotate(90f * Mathf.Round(steps));
         }
 
+        public void RotateHold(string arg)
+        {
+            var holder = PlayerComponent<PhotoHolder>();
+            if (holder == null) return;
+            float[] v = ParseFloats(arg);
+            holder.AutomationRotate = v != null && v.Length > 0 ? Mathf.Clamp(v[0], -1f, 1f) : 0f;
+        }
+
         public void Place(string arg) => TryPlace();
 
         public bool TryPlace()
@@ -299,11 +320,119 @@ namespace Ion.DebugTools
             return ok;
         }
 
-        public void Rewind(string arg)
+        /// <summary>
+        /// Places through the player's LMB path (press-in, cuts staged behind the card over the next frames). Logs the
+        /// begin frame's cost now and "Staged place done" with the frame count when the swap happens.
+        /// </summary>
+        public void PlacePress(string arg)
         {
             var holder = PlayerComponent<PhotoHolder>();
-            if (holder != null) holder.Rewind();
+            if (holder == null) return;
+            if (!holder.IsRaised && !holder.Raise()) { Warn("PlacePress: nothing to place"); return; }
+            var sw = System.Diagnostics.Stopwatch.StartNew();
+            bool ok = holder.PlaceWithPress();
+            sw.Stop();
+            var ps = ProjectionSystem.Instance;
+            Log("PlacePress begin took " + sw.Elapsed.TotalMilliseconds.ToString("0.0", Inv) + " ms" +
+                (ps != null ? " (" + ps.LastPlaceProfile + ")" : string.Empty));
+            if (!ok) { Warn("PlacePress: failed"); return; }
+            StartCoroutine(WatchPress(holder, Time.frameCount, Time.realtimeSinceStartup));
+        }
+
+        System.Collections.IEnumerator WatchPress(PhotoHolder holder, int frame0, float t0)
+        {
+            while (holder != null && holder.IsPlacing) yield return null;
+            var ps = ProjectionSystem.Instance;
+            Log("Staged place done after " + (Time.frameCount - frame0) + " frames, " +
+                ((Time.realtimeSinceStartup - t0) * 1000f).ToString("0", Inv) + " ms; pending cuts " +
+                (ps != null ? ps.PendingCutCount : 0) + "; staged work max " +
+                (ps != null ? ps.LastStageMaxFrameMs : 0f).ToString("0.0", Inv) + " ms/frame over " +
+                (ps != null ? ps.LastStageFrames : 0) + " frames; swap " + (holder != null ? holder.LastCommitMs : 0f).ToString("0.0", Inv) + " ms");
+        }
+
+        // ------------------------------------------------------------------ rewind / checkpoints / switches
+
+        /// <summary>Single R (art bible §11.2): lowers a raised photo, then WorldHistory.RewindOnce.</summary>
+        public void Rewind(string arg) => TryRewind();
+
+        public void rewind(string arg) => TryRewind();
+
+        public RewindResult TryRewind()
+        {
+            var holder = PlayerComponent<PhotoHolder>();
+            if (holder != null && holder.IsRaised) holder.Lower();
+            var history = WorldHistory.Instance;
+            if (history == null) { Warn("Rewind: no WorldHistory"); return RewindResult.Nothing; }
+            RewindResult r = history.RewindOnce();
             Physics.SyncTransforms();
+            Log("Rewind -> " + r);
+            return r;
+        }
+
+        /// <summary>R R: back to the last checkpoint (world, inventory, switches, pose).</summary>
+        public void Rewind2(string arg) => TryRewindToCheckpoint();
+
+        public void rewind2(string arg) => TryRewindToCheckpoint();
+
+        public RewindResult TryRewindToCheckpoint()
+        {
+            var holder = PlayerComponent<PhotoHolder>();
+            if (holder != null && holder.IsRaised) holder.Lower();
+            var history = WorldHistory.Instance;
+            if (history == null) { Warn("Rewind2: no WorldHistory"); return RewindResult.Nothing; }
+            RewindResult r = history.RewindToCheckpoint();
+            Physics.SyncTransforms();
+            Log("Rewind2 -> " + r);
+            return r;
+        }
+
+        /// <summary>Sets a checkpoint at the current pose (id = arg, default "debug").</summary>
+        public void Checkpoint(string arg)
+        {
+            var history = WorldHistory.Instance;
+            var player = Player;
+            if (history == null || player == null) { Warn("Checkpoint: not ready"); return; }
+            string id = string.IsNullOrWhiteSpace(arg) ? "debug" : arg.Trim();
+            history.SetCheckpoint(id, PlayerPose.Of(player));
+            Log("Checkpoint '" + id + "' at " + PlayerPose.Of(player));
+        }
+
+        public void checkpoint(string arg) => Checkpoint(arg);
+
+        /// <summary>Presses the switch the player could press with E: powered, in reach, nearest (in view first).</summary>
+        public void Press(string arg) => TryPress();
+
+        public void press(string arg) => TryPress();
+
+        public Switch TryPress()
+        {
+            Switch sw = FindSwitchInReach(true);
+            if (sw == null) { Warn("Press: no powered switch in reach"); return null; }
+            bool ok = sw.Press();
+            Physics.SyncTransforms();
+            Log("Press '" + sw.Channel + "' -> " + (ok ? (sw.On ? "on" : "off") : "refused"));
+            return ok ? sw : null;
+        }
+
+        /// <summary>The switch nearest the player's eye within its interact range (+0.5 m), preferring ones in view.</summary>
+        public static Switch FindSwitchInReach(bool poweredOnly)
+        {
+            var player = Player;
+            if (player == null) return null;
+            Transform eye = player.Camera != null ? player.Camera.transform : player.transform;
+            Switch best = null;
+            float bestScore = float.MaxValue;
+            foreach (Switch sw in FindObjectsByType<Switch>(FindObjectsSortMode.None))
+            {
+                if (sw == null || !sw.isActiveAndEnabled || (poweredOnly && !sw.Powered)) continue;
+                Vector3 d = sw.FocusPoint - eye.position;
+                float dist = d.magnitude;
+                if (dist > sw.InteractRange + 0.5f) continue;
+                bool inView = dist < 1.2f || Vector3.Dot(eye.forward, d) > 0.35f * dist;
+                float score = dist + (inView ? 0f : 100f);
+                if (score < bestScore) { bestScore = score; best = sw; }
+            }
+            return best;
         }
 
         public void Snap(string arg) => TrySnap();
@@ -321,13 +450,33 @@ namespace Ion.DebugTools
             return photo;
         }
 
+        /// <summary>Walks (real movement input) to a point local to the current zone: "x,y,z[,seconds]".</summary>
         public void Walk(string arg)
+        {
+            var game = Game;
+            var player = Player;
+            float[] v = ParseFloats(arg);
+            if (game == null || player == null || v == null || v.Length < 3) { Warn("Walk: expected 'x,y,z[,seconds]'"); return; }
+            RoomContext ctx = game.Rooms[game.CurrentRoom];
+            Vector3 target = ctx.WorldRoot.TransformPoint(new Vector3(v[0], v[1], v[2]));
+            player.ScriptedWalkTo(target, v.Length > 3 ? v[3] : 15f);
+        }
+
+        public void walk(string arg) => Walk(arg);
+
+        /// <summary>Holds movement input "x,z,seconds" (x = strafe right, z = forward, each -1..1).</summary>
+        public void Move(string arg)
         {
             float[] v = ParseFloats(arg);
             var player = Player;
-            if (player == null || v == null || v.Length < 3) { Warn("Walk: expected 'x,z,seconds'"); return; }
+            if (player == null || v == null || v.Length < 3) { Warn("Move: expected 'x,z,seconds'"); return; }
             player.ScriptedWalk(new Vector2(v[0], v[1]), v[2]);
         }
+
+        /// <summary>Enters a zone (its arrival pose), like GoTo with no spot.</summary>
+        public void Zone(string arg) => TryGoTo(arg);
+
+        public void zone(string arg) => TryGoTo(arg);
 
         public void WalkTo(string arg)
         {
@@ -356,7 +505,7 @@ namespace Ion.DebugTools
 
         public void Quality(string arg)
         {
-            if (!int.TryParse((arg ?? string.Empty).Trim(), NumberStyles.Integer, Inv, out int tier)) { Warn("Quality: expected -1..2"); return; }
+            if (!int.TryParse((arg ?? string.Empty).Trim(), NumberStyles.Integer, Inv, out int tier)) { Warn("Quality: expected -1..3"); return; }
             Ion.Presentation.QualityTier.Set(tier);
             Log("Quality " + Ion.Presentation.QualityTier.Name(Ion.Presentation.QualityTier.Preference) +
                 " -> tier " + Ion.Presentation.QualityTier.Name(Ion.Presentation.QualityTier.Current));
@@ -409,9 +558,12 @@ namespace Ion.DebugTools
             var sb = new StringBuilder(256);
             sb.Append('{');
             int room = game != null ? game.CurrentRoom : -1;
-            sb.Append("\"room\":").Append(room + 1);
+            sb.Append("\"room\":").Append(room);
             if (game != null && room >= 0 && room < game.Rooms.Count)
+            {
+                sb.Append(",\"zone\":\"").Append(Escape(game.Rooms[room].Room.Key)).Append('"');
                 sb.Append(",\"roomTitle\":\"").Append(Escape(game.Rooms[room].Room.Title)).Append('"');
+            }
             if (player != null)
             {
                 Vector3 p = player.transform.position;
@@ -442,12 +594,39 @@ namespace Ion.DebugTools
                 sb.Append(",\"camera\":").Append(cam.Unlocked ? "true" : "false").Append(",\"film\":").Append(cam.Film);
             if (ps != null)
                 sb.Append(",\"placements\":").Append(ps.PlacementCount).Append(",\"canRewind\":").Append(ps.CanRewind ? "true" : "false");
+            var history = WorldHistory.Instance;
+            if (history != null)
+            {
+                sb.Append(",\"history\":").Append(history.Depth).Append(",\"canUndo\":").Append(history.CanUndo ? "true" : "false");
+                if (history.LastCheckpoint != null)
+                    sb.Append(",\"checkpoint\":\"").Append(Escape(history.LastCheckpoint.Id)).Append('"');
+            }
+            var tracker = PlayerComponent<SafePoseTracker>();
+            if (tracker != null)
+                sb.Append(",\"falling\":").Append(tracker.IsFalling ? "true" : "false").Append(",\"limbo\":").Append(tracker.InLimbo ? "true" : "false");
+            var channels = SwitchBoard.Snapshot();
+            if (channels.Count > 0)
+            {
+                sb.Append(",\"switches\":{");
+                bool first = true;
+                foreach (var kv in channels)
+                {
+                    if (!first) sb.Append(',');
+                    first = false;
+                    sb.Append('"').Append(Escape(kv.Key)).Append("\":").Append(kv.Value ? "true" : "false");
+                }
+                sb.Append('}');
+            }
             int renderers = 0;
             foreach (MeshRenderer r in FindObjectsByType<MeshRenderer>(FindObjectsSortMode.None))
                 if (r.enabled && r.gameObject.activeInHierarchy) renderers++;
             sb.Append(",\"renderers\":").Append(renderers);
             sb.Append(",\"tier\":\"").Append(Ion.Presentation.QualityTier.Name(Ion.Presentation.QualityTier.Current)).Append('"');
             sb.Append(",\"frameMs\":").Append(F(Ion.Presentation.Quality.AdaptiveQuality.SmoothedFrameMs));
+            var urp = UnityEngine.Rendering.GraphicsSettings.currentRenderPipeline as UnityEngine.Rendering.Universal.UniversalRenderPipelineAsset;
+            sb.Append(",\"hdr\":").Append(urp != null && urp.supportsHDR ? "true" : "false");
+            sb.Append(",\"cascades\":").Append(urp != null ? urp.shadowCascadeCount : 0);
+            sb.Append(",\"localLights\":").Append(Ion.Presentation.Quality.UltraFx.ActiveLights);
             sb.Append('}');
             return sb.ToString();
         }

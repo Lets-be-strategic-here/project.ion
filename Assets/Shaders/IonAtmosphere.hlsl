@@ -12,6 +12,7 @@ float4 _IonSunWarm;       // rgb = golden-hour horizon colour towards the sun, w
 float4 _IonSunHalo;       // rgb = sun colour used for the soft halo / in-scattering
 float4 _IonFogParams;     // x = start (m), y = density (1/m), z = enabled (0/1), w = max fog (< 1 keeps silhouettes)
 float4 _IonFogHeight;     // x = extra density factor below the eye, y = metres below the eye where it starts, z = 1 / ramp (m)
+float4 _IonUltraFxAtmo;   // Ultra (UltraFx): y = fog sun in-scattering strength (0 elsewhere)
 float4 _IonGrade;         // x = contrast, y = lift (< 0 deepens the darks), z = pivot (display luma), w = enabled (0/1)
 
 // Sky colour seen along a world direction: vertical three-colour gradient, warmer towards the sun
@@ -62,7 +63,16 @@ float3 IonApplyFog(float3 color, float3 positionWS)
     float dist = length(v);
     float3 dir = v / max(dist, 1e-4);
     float f = IonFogAmount(positionWS, cam, dist);
-    return lerp(color, IonSkyColor(dir), f);
+    float3 fogCol = IonSkyColor(dir);
+    // Ultra: forward in-scattering towards the sun (soft warm glow / light-shaft feel in the haze).
+    if (_IonUltraFxAtmo.y > 0.0)
+    {
+        float s = saturate(dot(dir, _IonSunDirection.xyz));
+        float s2 = s * s, s8 = s2 * s2; s8 *= s8;
+        fogCol = lerp(fogCol, _IonSunHalo.rgb, saturate(_IonUltraFxAtmo.y * (0.35 * s2 + 0.65 * s8)));
+        f = saturate(f * (1.0 + 0.25 * _IonUltraFxAtmo.y * s8));
+    }
+    return lerp(color, fogCol, f);
 }
 
 // Final colour grade shared by every world shader (Ion/FlatToon, Ion/Backdrop, Ion/GradientSky), so

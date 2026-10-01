@@ -11,8 +11,8 @@ namespace Ion.Presentation
     ///
     /// Every effect has a toggle and a cost knob and follows <see cref="QualityTier"/>:
     /// <list type="bullet">
-    /// <item>Clouds: count 14 / 20 / 28 (Low / Med / High) x <see cref="CloudDensity"/>; Low uses 20-face puffs.</item>
-    /// <item>Motes: 30 / 90 / 180 particles x <see cref="MotesDensity"/>; noise turbulence only on High.</item>
+    /// <item>Clouds: count 14 / 20 / 28 / 34 (Low / Med / High / Ultra) x <see cref="CloudDensity"/>; Low uses 20-face puffs.</item>
+    /// <item>Motes: 30 / 90 / 180 / 320 particles x <see cref="MotesDensity"/>; noise turbulence on High and Ultra.</item>
     /// <item>Sway: off on Low, <see cref="SwayAmount"/> metres otherwise (vertex-only, Ion/FlatToon).</item>
     /// <item>Sun glow: 1 additive quad (Low/Med), 2 on High.</item>
     /// <item>Rim: <see cref="RimStrength"/> multiplier on every Ion/FlatToon material (global).</item>
@@ -54,8 +54,8 @@ namespace Ion.Presentation
         public static float RimStrength { get => s_RimStrength; set { s_RimStrength = Mathf.Clamp(value, 0f, 2f); Refresh(); } }
         public static float SunGlowIntensity { get => s_SunGlowIntensity; set { s_SunGlowIntensity = Mathf.Clamp(value, 0f, 2f); Refresh(); } }
 
-        /// <summary>Current tier, clamped to 0..2.</summary>
-        public static int Tier => Mathf.Clamp(QualityTier.Current, QualityTier.Low, QualityTier.High);
+        /// <summary>Current tier, clamped to 0..3.</summary>
+        public static int Tier => Mathf.Clamp(QualityTier.Current, QualityTier.Low, QualityTier.Ultra);
 
         /// <summary>Re-applies all settings (toggles, knobs, quality tier). Cheap; not per frame.</summary>
         public static void Refresh()
@@ -108,8 +108,11 @@ namespace Ion.Presentation
             float rim = s_Rim ? s_RimStrength : 0f;
             float sway = s_Sway && Tier > QualityTier.Low ? 1f : 0f;
             // w: the Low tier has no realtime shadows, so contact-shade discs deepen (FlatToon _AoBoost).
-            float contact = Tier == QualityTier.Low ? 1f : 0f;
+            // Ultra: the same baked contact shade at 45% as a cheap ambient-occlusion substitute (no SSAO on WebGL2).
+            float contact = Tier == QualityTier.Low ? 1f : Tier >= QualityTier.Ultra ? 0.45f : 0f;
             Shader.SetGlobalVector(ToonParamsId, new Vector4(rim, sway, 1f, contact));
+            // In-shader patterns (fade distances and the cut-face hatch depend on the tier).
+            Atmosphere.ApplyPatternGlobals();
         }
 
         /// <summary>
@@ -125,10 +128,25 @@ namespace Ion.Presentation
             // Kit.Tree canopies are merged per room (DecorCombiner): the sway weight lives in vertex alpha.
             Palette.Get(Ion.Levels.LevelColors.Leaves).SetFloat(SwayFromColorId, 1f);
             Palette.Get(Ion.Levels.LevelColors.LeavesDark).SetFloat(SwayFromColorId, 1f);
+            // Light Table plant roles (PropKit plants, merged by Arch.Bake): sway weight in vertex alpha.
+            SetSway(Palette.Get(Mat.Foliage), s_SwayAmount, 1.2f, -0.5f);
+            SetSway(Palette.Get(Mat.FoliageLight), s_SwayAmount * 1.1f, 1.35f, -0.5f);
+            SetSway(Palette.Get(Mat.FoliageDark), s_SwayAmount * 0.8f, 1.0f, -0.5f);
+            SetSway(Palette.Get(Mat.Lilac), s_SwayAmount, 1.25f, -0.5f);
         }
 
         static void SetSway(Material m, float amount, float freq, float anchorY)
         {
+            // The Ultra-only twin of a Palette role (extra plants) sways with it.
+            if (m != null && Palette.TryGetMat(m, out Mat role) && !Palette.IsUltra(m))
+            {
+                Material twin = Palette.PeekUltra(role);
+                if (twin != null && twin != m)
+                {
+                    SetSway(twin, amount, freq, anchorY);
+                    if (m.HasProperty(SwayFromColorId)) twin.SetFloat(SwayFromColorId, m.GetFloat(SwayFromColorId));
+                }
+            }
             if (m == null || !m.HasProperty(SwayId)) return;
             m.SetFloat(SwayId, amount);
             if (m.HasProperty(SwayFreqId)) m.SetFloat(SwayFreqId, freq);

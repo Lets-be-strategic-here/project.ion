@@ -26,6 +26,9 @@ namespace Ion.Projection
         public const int ExcludedLayerMask = (1 << PlayerLayer) | (1 << PhotoUILayer);
         /// <summary>Default preview width (pre-made photos). Snapshots pass a larger width (they fill more of the screen).</summary>
         public const int PreviewWidth = 768;
+
+        /// <summary>Preview width used when a capture names none (the Ultra tier raises it; see UltraFx).</summary>
+        public static int DefaultPreviewWidth = PreviewWidth;
         /// <summary>
         /// Far plane of the preview render. Only cuts and captures stop at <see cref="MaxFar"/>; the photo
         /// image also shows what lies beyond (the distant backdrop), like the player's own view.
@@ -155,8 +158,10 @@ namespace Ion.Projection
         /// Copies everything inside the frustum at <paramref name="pose"/> (near = HoldNear,
         /// far = MaxFar) into a new photo and renders its preview. The world is not modified.
         /// </summary>
-        public PhotoData Capture(Pose pose, float fovY, float aspect, string label, int previewWidth = PreviewWidth)
+        public PhotoData Capture(Pose pose, float fovY, float aspect, string label, int previewWidth = 0)
         {
+            if (previewWidth <= 0) previewWidth = DefaultPreviewWidth;
+            FlushPendingCuts();
             var frustum = new PhotoFrustum { Pose = pose, FovY = fovY, Aspect = aspect, Near = HoldNear, Far = MaxFar };
             frustum.GetPlanes(_planes);
 
@@ -173,7 +178,17 @@ namespace Ion.Projection
                 if (IsInsideInteractable(s)) continue;
 
                 Matrix4x4 localToWorld = mf.transform.localToWorldMatrix;
-                Mesh inside = MeshClipper.ClipInside(mf.sharedMesh, localToWorld, _planes);
+                Mesh source = mf.sharedMesh;
+                PieceElements insideElements = null;
+                Mesh inside;
+                // Merged meshes (Arch.Bake chunks, decor) are clipped element by element: each element is a closed
+                // convex piece, so its cap is convex; clipping the whole mesh could join the cut outlines of touching
+                // elements (a wall and its lintel) into one non-convex cap.
+                if (s.TryGetComponent(out MeshElements elements) && elements.Mesh == source && elements.Count > 1 &&
+                    source.subMeshCount == 1 && elements.EnsureData())
+                    inside = ClipInsideByElements(elements, localToWorld, pose.position, out insideElements);
+                else
+                    inside = MeshClipper.ClipInside(source, localToWorld, _planes);
                 if (inside == null) continue;
                 if (IsSliver(inside, localToWorld)) { DestroyObject(inside); continue; }
 
@@ -188,6 +203,7 @@ namespace Ion.Projection
                     ShadowCasting = mr.shadowCastingMode,
                     ReceiveShadows = mr.receiveShadows,
                     Collide = collide,
+                    Elements = insideElements,
                 });
             }
             sliceables.Clear();
@@ -230,14 +246,98 @@ namespace Ion.Projection
         /// Cuts the world outside-of-frustum (removing everything inside the viewer's photo frustum)
         /// and pastes the photo's contents, then pushes an undo record.
         /// </summary>
-        public void Place(PhotoData photo, Camera viewer, float rollDegrees) => PlaceCore(photo, viewer, rollDegrees, true);
+        public void Place(PhotoData photo, Camera viewer, float rollDegrees)
+        {
+            CommitStagedPlace();
+            PlaceCore(photo, viewer, rollDegrees, true, false);
+        }
 
-        void PlaceCore(PhotoData photo, Camera viewer, float rollDegrees, bool raiseEvents)
+        // ------------------------------------------------------------------ staged placement (the LMB path)
+
+        bool _staged;
+
+        /// <summary>
+        /// Per-frame budget (ms, as measured in the player) of a staged placement's cuts. The press-in holds the view
+        /// still with the photo covering exactly the frustum, so the world swap is spread over those frames instead of
+        /// landing in one (WebGL is single-threaded: one-frame placements were 2-3x over the 25 ms hitch budget at a
+        /// 6x CPU throttle).
+        /// </summary>
+        public const float StageBudgetMs = 6f;
+
+        /// <summary>True between <see cref="BeginStagedPlace"/> and its commit / cancel.</summary>
+        public bool IsStaging => _staged;
+
+        /// <summary>True while a staged placement still has cuts to make.</summary>
+        public bool StagingBusy => _staged && (_pendingCuts.Count > 0 || _pendingPastes.Count > 0 || _deferredColliders.Count > 0 || _handover.Count > 0);
+
+        // While staging, a cut keeps its original's collider on and cooks the cut piece's collider in a later frame
+        // (cutting and cooking the floor under the player in one frame was the largest single hitch); the originals
+        // listed here are switched off once every staged collider is cooked.
+        readonly List<Collider> _handover = new List<Collider>(16);
+        bool _stagingNow;
+
+        /// <summary>Longest per-frame placement work (ms) of the latest staged placement, and its frame count (debug / perf).</summary>
+        public float LastStageMaxFrameMs { get; private set; }
+        public int LastStageFrames { get; private set; }
+
+        void ReleaseHandover()
+        {
+            for (int i = 0; i < _handover.Count; i++)
+                if (_handover[i] != null) _handover[i].enabled = false;
+            _handover.Clear();
+        }
+
+        /// <summary>
+        /// Starts a placement whose cuts run over the next frames (<see cref="StageBudgetMs"/> each, nearest first) while
+        /// the caller keeps the raised photo over the frustum. Pastes and pushes the undo record at once (so the result is
+        /// that of <see cref="Place"/>), but raises <see cref="Placed"/> only at <see cref="CommitStagedPlace"/>.
+        /// <see cref="CancelStagedPlace"/> undoes it silently. False if nothing could be placed.
+        /// </summary>
+        public bool BeginStagedPlace(PhotoData photo, Camera viewer, float rollDegrees)
+        {
+            CommitStagedPlace();
+            int before = _undo.Count;
+            PlaceCore(photo, viewer, rollDegrees, false, Application.isPlaying);
+            if (_undo.Count <= before) return false;
+            _staged = true;
+            LastStageMaxFrameMs = 0f;
+            LastStageFrames = 0;
+            return true;
+        }
+
+        /// <summary>Ends a staged placement (the world swap the player sees). Cuts still pending finish as deferred cuts.</summary>
+        public void CommitStagedPlace()
+        {
+            if (!_staged) return;
+            if (_handover.Count > 0)
+            {
+                // Capped press (a very slow frame budget): finish the world swap now.
+                _stagingNow = true;
+                FlushPendingCuts();
+                _stagingNow = false;
+                FlushDeferredColliders();
+                ReleaseHandover();
+            }
+            _staged = false;
+            Placed?.Invoke();
+        }
+
+        /// <summary>Undoes a staged placement without events (the press was cancelled: R, lowering, restart).</summary>
+        public void CancelStagedPlace()
+        {
+            if (!_staged) return;
+            _staged = false;
+            _handover.Clear();   // the record re-enables nothing it did not switch off; these never went off
+            RewindCore(false);
+        }
+
+        void PlaceCore(PhotoData photo, Camera viewer, float rollDegrees, bool raiseEvents, bool stageAll)
         {
             if (photo == null || viewer == null) return;
+            FlushPendingCuts();
             FlushDeferredColliders();
             _watch.Restart();
-            int cooked = 0, deferred = 0;
+            int cooked = 0, deferred = 0, pendingAdded = 0;
             Vector3 eye = viewer.transform.position;
             bool canDefer = Application.isPlaying;
 
@@ -252,82 +352,30 @@ namespace Ion.Projection
             int clipped = 0;
             double slowMs = 0;
             string slowName = null;
+            bool deferFar = canDefer && DeferFarCuts;
             for (int i = 0; i < sliceables.Count; i++)
             {
                 Sliceable s = sliceables[i];
                 if (!TryGetCuttable(s, out MeshFilter mf, out MeshRenderer mr)) continue;
                 if (!GeometryUtility.TestPlanesAABB(_planes, mr.bounds)) continue;
                 if (IsInsideInteractable(s)) continue;
-
-                _pieces.Clear();
-                Matrix4x4 localToWorld = mf.transform.localToWorldMatrix;
-                Mesh mesh = mf.sharedMesh;
-                double c0 = _watch.Elapsed.TotalMilliseconds;
-
-                // Merged meshes: only the elements that straddle the frustum are clipped.
-                if (s.TryGetComponent(out MeshElements elements) && elements.Mesh == mesh &&
-                    elements.Count > 0 && mesh.subMeshCount == 1 && elements.EnsureData())
+                // Far pieces are cut over the next frames (a few ms per frame), under the placement's develop
+                // flash: the click itself only pays for what is near the player (what they stand on and touch).
+                float sqrDist = mr.bounds.SqrDistance(eye);
+                if (stageAll || (deferFar && sqrDist > DeferCutRadius * DeferCutRadius))
                 {
-                    bool touched = CutByElements(s, mf, mr, elements, localToWorld, record, eye, canDefer,
-                                                 ref cooked, ref deferred, ref colliderMs);
-                    double tookE = _watch.Elapsed.TotalMilliseconds - c0;
-                    clipMs += tookE;
-                    if (tookE > slowMs) { slowMs = tookE; slowName = mf.name + "/" + elements.Count + " el"; }
-                    if (touched) clipped++;
+                    _pendingCuts.Add(new PendingCut { Target = s, Record = record, SqrDistance = sqrDist });
+                    pendingAdded++;
                     continue;
                 }
-
-                if (CanMerge(mesh))
-                {
-                    bool collide = s.TryGetComponent(out Collider _);
-                    _near.Reset();
-                    _far.Reset();
-                    _sink.Begin(_near, collide && canDefer ? _far : _near, localToWorld, eye);
-                    MeshClipper.Classification merged = MeshClipper.ClipOutsideInto(mesh, localToWorld, _planes, _sink);
-                    if (merged != MeshClipper.Classification.Outside)
-                    {
-                        clipped++;
-                        Hide(s, mr, record);
-                        SpawnMerged(mf, mr, _near, collide, false, record, ref cooked, ref deferred, ref colliderMs);
-                        SpawnMerged(mf, mr, _far, collide, true, record, ref cooked, ref deferred, ref colliderMs);
-                    }
-                    double tookM = _watch.Elapsed.TotalMilliseconds - c0;
-                    clipMs += tookM;
-                    if (tookM > slowMs) { slowMs = tookM; slowName = mf.name + "/" + mesh.GetIndexCount(0) / 3; }
-                    continue;
-                }
-
-                MeshClipper.Classification result =
-                    MeshClipper.ClipOutside(mesh, localToWorld, _planes, _pieces);
-                double took = _watch.Elapsed.TotalMilliseconds - c0;
-                clipMs += took;
-                if (took > slowMs) { slowMs = took; slowName = mf.name + "/" + mesh.GetIndexCount(0) / 3; }
-                if (result == MeshClipper.Classification.Outside) continue;
-                clipped++;
-
-                Hide(s, mr, record);
-                for (int p = 0; p < _pieces.Count; p++)
-                {
-                    Mesh piece = _pieces[p];
-                    if (IsSliver(piece, localToWorld)) { DestroyObject(piece); continue; }
-                    record.OwnedMeshes.Add(piece);
-                    GameObject cut = SpawnCutPiece(mf, mr, piece, out bool wantsCollider);
-                    record.Spawned.Add(cut);
-                    if (!wantsCollider) continue;
-                    if (canDefer && !IsNear(piece, cut.transform.localToWorldMatrix, eye))
-                    {
-                        _deferredColliders.Add(cut);
-                        deferred++;
-                    }
-                    else
-                    {
-                        double k0 = _watch.Elapsed.TotalMilliseconds;
-                        AddCollider(cut, piece);
-                        colliderMs += _watch.Elapsed.TotalMilliseconds - k0;
-                        cooked++;
-                    }
-                }
-                _pieces.Clear();
+                CutOne(s, mf, mr, record, eye, canDefer, ref cooked, ref deferred, ref colliderMs, ref clipMs, ref clipped, ref slowMs, ref slowName);
+            }
+            if (pendingAdded > 0)
+            {
+                // Nearest first: what the player stands on is done in the first staged frame.
+                if (stageAll) _pendingCuts.Sort((a, b) => a.SqrDistance.CompareTo(b.SqrDistance));
+                _pendingEye = eye;
+                System.Array.Copy(_planes, _pendingPlanes, _planes.Length);
             }
             sliceables.Clear();
             double cutMs = _watch.Elapsed.TotalMilliseconds;
@@ -349,9 +397,13 @@ namespace Ion.Projection
             _lastPasted.Clear();
             for (int i = 0; i < photo.Pieces.Count; i++)
             {
-                GameObject pasted = SpawnPhotoPiece(photo.Pieces[i], viewerFrame, root);
-                record.Spawned.Add(pasted);
-                if (pasted.TryGetComponent(out MeshRenderer pr)) _lastPasted.Add(pr);
+                if (stageAll)
+                {
+                    // Staged: spawned over the press frames too (behind the card), after the cuts.
+                    _pendingPastes.Add(new PendingPaste { Piece = photo.Pieces[i], ViewerFrame = viewerFrame, Record = record });
+                    continue;
+                }
+                PasteOne(photo.Pieces[i], viewerFrame, root, record);
             }
             for (int i = 0; i < photo.Entities.Count; i++)
             {
@@ -372,16 +424,218 @@ namespace Ion.Projection
             LastPlaceProfile = "find " + findMs.ToString("0.0") + " ms, clip " + clipMs.ToString("0.0") + " ms (" + clipped + " objects, slowest " + slowName + " " + slowMs.ToString("0.0") + " ms), cook " +
                                colliderMs.ToString("0.0") + " ms, cut total " + cutMs.ToString("0.0") + " ms, paste " +
                                (_watch.Elapsed.TotalMilliseconds - cutMs).ToString("0.0") + " ms, " +
-                               photo.Pieces.Count + " pasted, cut colliders " + cooked + " now / " + deferred + " next frame";
+                               photo.Pieces.Count + " pasted, cut colliders " + cooked + " now / " + deferred + " next frame, " +
+                               pendingAdded + (stageAll ? " cuts staged over the press" : " far cuts over the next frames");
             if (raiseEvents) Placed?.Invoke();
         }
 
+        void PasteOne(PhotoPiece piece, Matrix4x4 viewerFrame, Transform root, PlacementRecord record)
+        {
+            GameObject pasted = SpawnPhotoPiece(piece, viewerFrame, root);
+            record.Spawned.Add(pasted);
+            if (pasted.TryGetComponent(out MeshRenderer pr)) _lastPasted.Add(pr);
+        }
+
+        /// <summary>One Sliceable's share of a placement cut (with the frustum in _planes).</summary>
+        void CutOne(Sliceable s, MeshFilter mf, MeshRenderer mr, PlacementRecord record, Vector3 eye, bool canDefer,
+                    ref int cooked, ref int deferred, ref double colliderMs, ref double clipMs, ref int clipped,
+                    ref double slowMs, ref string slowName)
+        {
+                _pieces.Clear();
+                Matrix4x4 localToWorld = mf.transform.localToWorldMatrix;
+                Mesh mesh = mf.sharedMesh;
+                double c0 = _watch.Elapsed.TotalMilliseconds;
+
+                // Merged meshes: only the elements that straddle the frustum are clipped.
+                if (s.TryGetComponent(out MeshElements elements) && elements.Mesh == mesh &&
+                    elements.Count > 0 && mesh.subMeshCount == 1 && elements.EnsureData())
+                {
+                    bool touched = CutByElements(s, mf, mr, elements, localToWorld, record, eye, canDefer,
+                                                 ref cooked, ref deferred, ref colliderMs);
+                    double tookE = _watch.Elapsed.TotalMilliseconds - c0;
+                    clipMs += tookE;
+                    if (tookE > slowMs) { slowMs = tookE; slowName = mf.name + "/" + elements.Count + " el"; }
+                    if (touched) clipped++;
+                    return;
+                }
+
+                if (CanMerge(mesh))
+                {
+                    bool collide = s.TryGetComponent(out Collider _);
+                    _near.Reset();
+                    _far.Reset();
+                    _sink.Begin(_near, collide && canDefer ? _far : _near, localToWorld, eye);
+                    MeshClipper.Classification merged = MeshClipper.ClipOutsideInto(mesh, localToWorld, _planes, _sink);
+                    if (merged != MeshClipper.Classification.Outside)
+                    {
+                        clipped++;
+                        Hide(s, mr, record);
+                        SpawnMerged(mf, mr, _near, collide, false, record, ref cooked, ref deferred, ref colliderMs);
+                        SpawnMerged(mf, mr, _far, collide, true, record, ref cooked, ref deferred, ref colliderMs);
+                    }
+                    double tookM = _watch.Elapsed.TotalMilliseconds - c0;
+                    clipMs += tookM;
+                    if (tookM > slowMs) { slowMs = tookM; slowName = mf.name + "/" + mesh.GetIndexCount(0) / 3; }
+                    return;
+                }
+
+                MeshClipper.Classification result =
+                    MeshClipper.ClipOutside(mesh, localToWorld, _planes, _pieces);
+                double took = _watch.Elapsed.TotalMilliseconds - c0;
+                clipMs += took;
+                if (took > slowMs) { slowMs = took; slowName = mf.name + "/" + mesh.GetIndexCount(0) / 3; }
+                if (result == MeshClipper.Classification.Outside) return;
+                clipped++;
+
+                Hide(s, mr, record);
+                for (int p = 0; p < _pieces.Count; p++)
+                {
+                    Mesh piece = _pieces[p];
+                    if (IsSliver(piece, localToWorld)) { DestroyObject(piece); continue; }
+                    record.OwnedMeshes.Add(piece);
+                    GameObject cut = SpawnCutPiece(mf, mr, piece, out bool wantsCollider);
+                    record.Spawned.Add(cut);
+                    if (!wantsCollider) continue;
+                    if (canDefer && (_stagingNow || !IsNear(piece, cut.transform.localToWorldMatrix, eye)))
+                    {
+                        _deferredColliders.Add(cut);
+                        deferred++;
+                    }
+                    else
+                    {
+                        double k0 = _watch.Elapsed.TotalMilliseconds;
+                        AddCollider(cut, piece);
+                        colliderMs += _watch.Elapsed.TotalMilliseconds - k0;
+                        cooked++;
+                    }
+                }
+                _pieces.Clear();
+        }
+
+        // ------------------------------------------------------------------ deferred far cuts
+
+        struct PendingCut
+        {
+            public Sliceable Target;
+            public PlacementRecord Record;
+            public float SqrDistance;
+        }
+
+        /// <summary>
+        /// Placement cuts farther than <see cref="DeferCutRadius"/> from the eye are applied over the following frames
+        /// (<see cref="DeferCutBudgetMs"/> per frame) instead of in the click's frame (WebGL is single-threaded; the
+        /// whole cut was 1.5–3× over the 25 ms hitch budget at 6× CPU throttle). Pending cuts are flushed before any
+        /// other placement, rewind or capture, so the semantics are those of an immediate cut. Off in edit mode.
+        /// </summary>
+        public static bool DeferFarCuts = true;
+        public const float DeferCutRadius = 9f;
+        public const float DeferCutBudgetMs = 3f;
+
+        readonly List<PendingCut> _pendingCuts = new List<PendingCut>(64);
+
+        struct PendingPaste
+        {
+            public PhotoPiece Piece;
+            public Matrix4x4 ViewerFrame;
+            public PlacementRecord Record;
+        }
+
+        readonly List<PendingPaste> _pendingPastes = new List<PendingPaste>(64);
+
+        // Running cost estimates (ms per mesh vertex for a cut, ms per pasted piece) so a budgeted frame does not
+        // start an item it cannot finish in time (each frame still does at least one).
+        double _cutMsPerVertex = 0.002, _pasteMs = 0.3;
+        readonly Plane[] _pendingPlanes = new Plane[PhotoFrustum.PlaneCount];
+        Vector3 _pendingEye;
+
+        /// <summary>Far cuts of the latest placement still waiting (they finish within a few frames).</summary>
+        public int PendingCutCount => _pendingCuts.Count + _pendingPastes.Count;
+
+        /// <summary>Applies every pending far cut now (before a new placement, a rewind or a capture).</summary>
+        public void FlushPendingCuts() => ProcessPendingCuts(double.MaxValue);
+
+        void ProcessPendingCuts(double budgetMs)
+        {
+            if (_pendingCuts.Count == 0 && _pendingPastes.Count == 0) return;
+            var watch = System.Diagnostics.Stopwatch.StartNew();
+            int cooked = 0, deferredCount = 0, clipped = 0;
+            double colliderMs = 0, clipMs = 0, slowMs = 0;
+            string slowName = null;
+            int done = 0, work = 0;
+            if (_pendingCuts.Count > 0) System.Array.Copy(_pendingPlanes, _planes, _planes.Length);
+            while (done < _pendingCuts.Count)
+            {
+                PendingCut pc = _pendingCuts[done];
+                Sliceable s = pc.Target;
+                if (s == null || pc.Record == null || !_undo.Contains(pc.Record) || !TryGetCuttable(s, out MeshFilter mf, out MeshRenderer mr))
+                {
+                    done++;
+                    continue;
+                }
+                int verts = mf.sharedMesh != null ? mf.sharedMesh.vertexCount : 0;
+                double t0 = watch.Elapsed.TotalMilliseconds;
+                if (work > 0 && t0 + verts * _cutMsPerVertex > budgetMs) break;
+                done++;
+                work++;
+                CutOne(s, mf, mr, pc.Record, _pendingEye, true, ref cooked, ref deferredCount, ref colliderMs, ref clipMs, ref clipped,
+                       ref slowMs, ref slowName);
+                double took = watch.Elapsed.TotalMilliseconds - t0;
+                if (verts > 0) _cutMsPerVertex = 0.7 * _cutMsPerVertex + 0.3 * (took / verts);
+                if (watch.Elapsed.TotalMilliseconds >= budgetMs) break;
+            }
+            _pendingCuts.RemoveRange(0, done);
+            if (deferredCount > 0) _deferredFrame = Time.frameCount;
+            if (_pendingCuts.Count > 0) return;
+
+            // Then the staged paste.
+            done = 0;
+            Transform root = _pendingPastes.Count > 0 ? EnsurePlacedRoot() : null;
+            while (done < _pendingPastes.Count)
+            {
+                PendingPaste pp = _pendingPastes[done];
+                if (pp.Record == null || !_undo.Contains(pp.Record)) { done++; continue; }
+                double t0 = watch.Elapsed.TotalMilliseconds;
+                if (work > 0 && t0 + _pasteMs > budgetMs) break;
+                done++;
+                work++;
+                PasteOne(pp.Piece, pp.ViewerFrame, root, pp.Record);
+                _pasteMs = 0.7 * _pasteMs + 0.3 * (watch.Elapsed.TotalMilliseconds - t0);
+                if (watch.Elapsed.TotalMilliseconds >= budgetMs) break;
+            }
+            _pendingPastes.RemoveRange(0, done);
+        }
+
+        /// <summary>Cooks deferred cut colliders until <paramref name="budgetMs"/> is spent (at least one).</summary>
+        void CookDeferredColliders(double budgetMs)
+        {
+            var watch = System.Diagnostics.Stopwatch.StartNew();
+            int done = 0;
+            while (done < _deferredColliders.Count)
+            {
+                GameObject go = _deferredColliders[done++];
+                if (go == null || !go.activeSelf || !go.TryGetComponent(out MeshFilter mf) || mf.sharedMesh == null) continue;
+                if (!go.TryGetComponent(out MeshCollider _)) AddCollider(go, mf.sharedMesh);
+                if (watch.Elapsed.TotalMilliseconds >= budgetMs) break;
+            }
+            _deferredColliders.RemoveRange(0, done);
+        }
+
         /// <summary>Undoes the most recent placement.</summary>
-        public void Rewind() => RewindCore(true);
+        public void Rewind()
+        {
+            // A placement still being staged never happened as far as the history knows: drop it first.
+            CancelStagedPlace();
+            RewindCore(true);
+        }
 
         void RewindCore(bool raiseEvents)
         {
             if (_undo.Count == 0) return;
+            // Far cuts still pending for the record being undone never happened: drop them; older ones finish first.
+            PlacementRecord top = _undo[_undo.Count - 1];
+            _pendingCuts.RemoveAll(pc => pc.Record == top);
+            _pendingPastes.RemoveAll(pp => pp.Record == top);
+            FlushPendingCuts();
             PlacementRecord record = _undo[_undo.Count - 1];
             _undo.RemoveAt(_undo.Count - 1);
             _lastPasted.Clear();
@@ -476,7 +730,7 @@ namespace Ion.Projection
                 var cam = camGo.AddComponent<Camera>();
                 cam.enabled = false;
                 int before = _undo.Count;
-                PlaceCore(photo, cam, 0f, false);
+                PlaceCore(photo, cam, 0f, false, false);
                 FlushDeferredColliders();
                 if (_undo.Count > before) RewindCore(false);
             }
@@ -529,6 +783,10 @@ namespace Ion.Projection
         /// <summary>Forgets all placements without undoing them (e.g. when a level is rebuilt).</summary>
         public void ClearHistory()
         {
+            _staged = false;
+            _pendingCuts.Clear();
+            _pendingPastes.Clear();
+            _handover.Clear();
             _undo.Clear();
         }
 
@@ -565,7 +823,7 @@ namespace Ion.Projection
                 AnyNear = false;
             }
 
-            public void AddPiece(List<Vector3> p, List<Vector3> n, List<Color32> c, List<int> t)
+            public void AddPiece(List<Vector3> p, List<Vector3> n, List<Color32> c, List<Vector4> u, List<int> t)
             {
                 int count = p.Count;
                 if (count < 3 || t.Count < 3) return;
@@ -584,7 +842,7 @@ namespace Ion.Projection
                 b.SetMinMax(min, max);
                 bool near = WorldBounds(b, _localToWorld).SqrDistance(_eye) <= ImmediateColliderRadius * ImmediateColliderRadius;
                 if (near) AnyNear = true;
-                (near || _far == _near ? _near : _far).AddPiece(p, n, c, t, b);
+                (near || _far == _near ? _near : _far).AddPiece(p, n, c, u, t, b); // UV0 copied unchanged
             }
         }
 
@@ -601,14 +859,14 @@ namespace Ion.Projection
                          ref int cooked, ref int deferred, ref double colliderMs)
         {
             if (merger.ElementCount == 0) return;
-            Mesh mesh = merger.Build(mf.sharedMesh.name + " (cut)", out Vector3[] p, out Vector3[] n, out Color32[] c, out int[] t);
+            Mesh mesh = merger.Build(mf.sharedMesh.name + " (cut)", out Vector3[] p, out Vector3[] n, out Color32[] c, out Vector4[] u, out int[] t);
             if (mesh == null) return;
             record.OwnedMeshes.Add(mesh);
             GameObject go = SpawnCutPiece(mf, mr, mesh, out bool wantsCollider);
-            merger.ApplyTo(go.AddComponent<MeshElements>(), mesh, p, n, c, t);
+            merger.ApplyTo(go.AddComponent<MeshElements>(), mesh, p, n, c, u, t);
             record.Spawned.Add(go);
             if (!collide || !wantsCollider) return;
-            if (far)
+            if (far || _stagingNow)
             {
                 _deferredColliders.Add(go);
                 deferred++;
@@ -651,8 +909,9 @@ namespace Ion.Projection
             bool collide = s.TryGetComponent(out Collider _);
             Vector3[] P = el.Positions, N = el.Normals;
             Color32[] C = el.Colors;
+            Vector4[] U = el.Uvs;
             int[] T = el.Indices;
-            _near.BeginShared(P, N, C);
+            _near.BeginShared(P, N, C, U);
             _sink.Begin(_near, _near, localToWorld, eye);
             bool near = !canDefer;
             for (int k = 0; k < _keep.Count; k++)
@@ -667,7 +926,7 @@ namespace Ion.Projection
             {
                 int e = _straddle[k];
                 MeshClipper.Classification r = MeshClipper.ClipOutsideRange(P, N, C, T, el.VertexStart[e], el.VertexCount[e],
-                    el.IndexStart[e], el.IndexCount[e], planeCount, _sink);
+                    el.IndexStart[e], el.IndexCount[e], planeCount, _sink, U);
                 if (r == MeshClipper.Classification.Outside)
                 {
                     // Conservative bounds: nothing actually inside, keep it whole.
@@ -691,6 +950,49 @@ namespace Ion.Projection
             SpawnMerged(mf, mr, _near, collide, !near, record, ref cooked, ref deferred, ref colliderMs);
             _near.Reset();
             return true;
+        }
+
+        /// <summary>
+        /// The part of a merged mesh inside the capture frustum (_planes), element by element: elements outside are
+        /// skipped, elements inside are copied whole, straddling ones are clipped (convex caps). The result keeps one
+        /// element per piece (<paramref name="table"/>), so the pasted copy is cut element-wise too. Null if empty.
+        /// </summary>
+        Mesh ClipInsideByElements(MeshElements el, Matrix4x4 localToWorld, Vector3 eye, out PieceElements table)
+        {
+            table = null;
+            int planeCount = MeshClipper.PrepareLocalPlanes(localToWorld, _planes);
+            Vector3[] P = el.Positions, N = el.Normals;
+            Color32[] C = el.Colors;
+            Vector4[] U = el.Uvs;
+            int[] T = el.Indices;
+            _near.Reset();
+            _sink.Begin(_near, _near, localToWorld, eye); // drops crumbs and slivers like a cut
+            Bounds[] bounds = el.Bounds;
+            for (int e = 0; e < bounds.Length; e++)
+            {
+                MeshClipper.Classification c = MeshClipper.ClassifyLocalBounds(bounds[e], planeCount);
+                if (c == MeshClipper.Classification.Outside) continue;
+                int v0 = el.VertexStart[e], vn = el.VertexCount[e], t0 = el.IndexStart[e], tn = el.IndexCount[e];
+                if (c == MeshClipper.Classification.Straddling)
+                {
+                    c = MeshClipper.ClipInsideRange(P, N, C, T, v0, vn, t0, tn, planeCount, _sink, U);
+                    if (c != MeshClipper.Classification.Inside) continue; // emitted (or empty)
+                }
+                _near.AddTransformedRange(P, N, C, U, T, v0, vn, t0, tn, Matrix4x4.identity);
+            }
+            if (_near.ElementCount == 0) { _near.Reset(); return null; }
+            Mesh mesh = _near.Build(el.Mesh.name + " (in)", out Vector3[] mp, out Vector3[] mn, out Color32[] mc, out int[] mt);
+            if (mesh != null)
+            {
+                _near.GetTable(out int[] tv0, out int[] tvn, out int[] tt0, out int[] ttn, out Bounds[] tb);
+                table = new PieceElements
+                {
+                    VertexStart = tv0, VertexCount = tvn, IndexStart = tt0, IndexCount = ttn, Bounds = tb,
+                    Positions = mp, Normals = mn, Colors = mc, Indices = mt,
+                };
+            }
+            _near.Reset();
+            return mesh;
         }
 
         /// <summary>
@@ -723,9 +1025,21 @@ namespace Ion.Projection
                 for (int i = 0; i < g.Count; i++)
                 {
                     Mesh m = g[i].Mesh;
+                    PieceElements pe = g[i].Elements;
+                    // UV0 (pattern space + code) travels unchanged: positions are transformed, UV0 never is.
+                    Vector4[] uv = ReadUV0(m);
+                    if (pe != null && pe.Positions != null && pe.Indices != null && pe.Positions.Length == m.vertexCount)
+                    {
+                        // Keep the piece's own elements (one convex element each), so pasted copies cut cleanly.
+                        for (int e = 0; e < pe.VertexStart.Length; e++)
+                            _photoMerger.AddTransformedRange(pe.Positions, pe.Normals, pe.Colors, uv, pe.Indices,
+                                pe.VertexStart[e], pe.VertexCount[e], pe.IndexStart[e], pe.IndexCount[e], g[i].Relative);
+                        continue;
+                    }
                     Vector3[] n = m.normals;
                     Color32[] c = m.colors32;
-                    _photoMerger.AddTransformed(m.vertices, n.Length > 0 ? n : null, c.Length > 0 ? c : null, m.GetIndices(0), g[i].Relative);
+                    _photoMerger.AddTransformed(m.vertices, n.Length > 0 ? n : null, c.Length > 0 ? c : null, uv,
+                                                m.GetIndices(0), g[i].Relative);
                 }
                 Mesh merged = _photoMerger.Build("Photo " + g[0].Materials[0].name, out Vector3[] mp, out Vector3[] mn, out Color32[] mc, out int[] mt);
                 if (merged == null) { result.AddRange(g); continue; }
@@ -752,6 +1066,18 @@ namespace Ion.Projection
             _photoMerger.Reset();
             pieces.Clear();
             pieces.AddRange(result);
+        }
+
+        static readonly List<Vector4> s_uv0 = new List<Vector4>(256);
+
+        /// <summary>The mesh's UV0 as float4 (pattern space + PatternCode), or null when it has none.</summary>
+        static Vector4[] ReadUV0(Mesh m)
+        {
+            if (!m.HasVertexAttribute(VertexAttribute.TexCoord0)) return null;
+            m.GetUVs(0, s_uv0);
+            Vector4[] result = s_uv0.Count == m.vertexCount ? s_uv0.ToArray() : null;
+            s_uv0.Clear();
+            return result;
         }
 
         static readonly int SwayId = Shader.PropertyToID("_Sway"), SwayFromColorId = Shader.PropertyToID("_SwayFromColor");
@@ -919,8 +1245,9 @@ namespace Ion.Projection
             {
                 Collider c = _colliderScratch[i];
                 if (!c.enabled) continue;
-                c.enabled = false;
                 record.DisabledColliders.Add(c);
+                if (_stagingNow) { _handover.Add(c); continue; }   // off once the cut piece's collider is cooked
+                c.enabled = false;
             }
             _colliderScratch.Clear();
         }
@@ -1010,6 +1337,21 @@ namespace Ion.Projection
 
         void Update()
         {
+            if (_staged)
+            {
+                // The press: cuts, then the paste, then far colliders, all inside one frame budget.
+                var watch = System.Diagnostics.Stopwatch.StartNew();
+                _stagingNow = true;
+                if (_pendingCuts.Count > 0 || _pendingPastes.Count > 0) ProcessPendingCuts(StageBudgetMs);
+                _stagingNow = false;
+                double left = StageBudgetMs - watch.Elapsed.TotalMilliseconds;
+                if (_deferredColliders.Count > 0 && Time.frameCount > _deferredFrame && left > 1.0) CookDeferredColliders(left);
+                if (_pendingCuts.Count == 0 && _deferredColliders.Count == 0 && _handover.Count > 0) ReleaseHandover();
+                LastStageFrames++;
+                LastStageMaxFrameMs = Mathf.Max(LastStageMaxFrameMs, (float)watch.Elapsed.TotalMilliseconds);
+                return;
+            }
+            if (_pendingCuts.Count > 0 || _pendingPastes.Count > 0) ProcessPendingCuts(DeferCutBudgetMs);
             if (_deferredColliders.Count > 0 && Time.frameCount > _deferredFrame) FlushDeferredColliders();
         }
 

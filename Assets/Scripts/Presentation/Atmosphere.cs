@@ -16,7 +16,7 @@ namespace Ion.Presentation
     /// one light, so they always agree.
     /// Further ambience (clouds, motes, sway, sun glow, rim) lives in <c>Ion.Presentation.Ambience</c>.
     /// </summary>
-    public static class Atmosphere
+    public static partial class Atmosphere
     {
         public const string SkyShaderName = "Ion/GradientSky";
         public const string SunName = "Ion Sun";
@@ -90,66 +90,31 @@ namespace Ion.Presentation
         public static Light Apply()
         {
             Light sun = CreateOrFindSun();
-
-            // Sky.
-            if (s_SkyMaterial == null)
-            {
-                var skyShader = Shader.Find(SkyShaderName);
-                if (skyShader != null)
-                {
-                    s_SkyMaterial = new Material(skyShader) { name = "Ion_GradientSky" };
-                    s_SkyMaterial.SetColor("_TopColor", SkyTop);
-                    s_SkyMaterial.SetColor("_HorizonColor", SkyHorizon);
-                    s_SkyMaterial.SetColor("_BottomColor", SkyBottom);
-                    s_SkyMaterial.SetColor("_SunColor", SunDisc);
-                    if (s_SkyMaterial.HasProperty("_SunSize")) s_SkyMaterial.SetFloat("_SunSize", SkySunSize);
-                    if (s_SkyMaterial.HasProperty("_SunHalo")) s_SkyMaterial.SetFloat("_SunHalo", SkySunHalo);
-                    if (s_SkyMaterial.HasProperty("_TopExponent")) s_SkyMaterial.SetFloat("_TopExponent", SkyTopExponent);
-                    if (s_SkyMaterial.HasProperty("_BottomExponent")) s_SkyMaterial.SetFloat("_BottomExponent", SkyBottomExponent);
-                }
-                else
-                {
-                    Debug.LogWarning("[Atmosphere] Shader '" + SkyShaderName +
-                                     "' not found (add it to Always Included Shaders). Sky will use the default.");
-                }
-            }
+            EnsureSkyMaterial();
             if (s_SkyMaterial != null)
                 RenderSettings.skybox = s_SkyMaterial;
-
-            // Ambient (Unity's own trilight, used by URP SH / any fallback shaders).
-            RenderSettings.ambientMode = AmbientMode.Trilight;
-            RenderSettings.ambientSkyColor = AmbientSky;
-            RenderSettings.ambientEquatorColor = AmbientEquator;
-            RenderSettings.ambientGroundColor = AmbientGround;
-            RenderSettings.ambientIntensity = 1f;
             RenderSettings.sun = sun;
-
-            // Fog.
-            RenderSettings.fog = true;
-            RenderSettings.fogMode = FogMode.Linear;
-            RenderSettings.fogColor = SkyHorizon;
-            RenderSettings.fogStartDistance = FogStart;
-            RenderSettings.fogEndDistance = FogEnd;
-
-            // Globals read by Ion/FlatToon (explicitly linear so no colour-space ambiguity).
-            Shader.SetGlobalVector(IonAmbientSky, (Vector4)AmbientSky.linear);
-            Shader.SetGlobalVector(IonAmbientEquator, (Vector4)AmbientEquator.linear);
-            Shader.SetGlobalVector(IonAmbientGround, (Vector4)AmbientGround.linear);
-            Shader.SetGlobalVector(IonFogParams, new Vector4(FogStart, FogDensity, 1f, FogMax));
-            Shader.SetGlobalVector(IonFogHeight, new Vector4(FogBelowBoost, FogBelowStart, 1f / FogBelowRamp, 0f));
-            Color top = SkyTop.linear, horizon = SkyHorizon.linear;
-            Shader.SetGlobalVector(IonSkyTop, new Vector4(top.r, top.g, top.b, SkyTopExponent));
-            Shader.SetGlobalVector(IonSkyHorizon, new Vector4(horizon.r, horizon.g, horizon.b, SkyBottomExponent));
-            Shader.SetGlobalVector(IonSkyBottom, (Vector4)SkyBottom.linear);
-            Color warm = SunWarm.linear;
-            Shader.SetGlobalVector(IonSunWarm, new Vector4(warm.r, warm.g, warm.b, SunWarmStrength));
-            Shader.SetGlobalVector(IonSunHalo, (Vector4)SunHaloColor.linear);
-            Shader.SetGlobalVector(IonGrade, new Vector4(GradeContrast, GradeLift, GradePivot, 1f));
-            // Taken from the light itself, so the sky, the fog's sun side and the shadows agree.
-            Vector3 toSun = -sun.transform.forward;
-            Shader.SetGlobalVector(IonSunDirection, new Vector4(toSun.x, toSun.y, toSun.z, SkySunHalo));
-
+            // Keep the zone mood if one was applied already (Apply is safe to call again).
+            ApplyMood(s_HasMood ? s_Current : ZoneMood.Default);
             return sun;
+        }
+
+        static void EnsureSkyMaterial()
+        {
+            if (s_SkyMaterial != null) return;
+            var skyShader = Shader.Find(SkyShaderName);
+            if (skyShader == null)
+            {
+                Debug.LogWarning("[Atmosphere] Shader '" + SkyShaderName +
+                                 "' not found (add it to Always Included Shaders). Sky will use the default.");
+                return;
+            }
+            s_SkyMaterial = new Material(skyShader) { name = "Ion_GradientSky" };
+            s_SkyMaterial.SetColor("_SunColor", SunDisc);
+            if (s_SkyMaterial.HasProperty("_SunSize")) s_SkyMaterial.SetFloat("_SunSize", SkySunSize);
+            if (s_SkyMaterial.HasProperty("_SunHalo")) s_SkyMaterial.SetFloat("_SunHalo", SkySunHalo);
+            if (s_SkyMaterial.HasProperty("_TopExponent")) s_SkyMaterial.SetFloat("_TopExponent", SkyTopExponent);
+            if (s_SkyMaterial.HasProperty("_BottomExponent")) s_SkyMaterial.SetFloat("_BottomExponent", SkyBottomExponent);
         }
 
         static Light CreateOrFindSun()
@@ -173,7 +138,200 @@ namespace Ion.Presentation
             sun.cullingMask = ~(1 << 9);
             // Side light: shadows fall to the left and slightly toward the player, faces read in three tones.
             sun.transform.rotation = Quaternion.LookRotation(-ToSun, Vector3.up);
+            s_Sun = sun;
             return sun;
+        }
+    }
+
+    // ====================================================================== zone moods (art bible §3.4)
+
+    public static partial class Atmosphere
+    {
+        static readonly int IonShadowTintId = Shader.PropertyToID("_IonShadowTint");
+        static readonly int IonShadowTintMixId = Shader.PropertyToID("_IonShadowTintMix");
+        static readonly int IonShadowHueId = Shader.PropertyToID("_IonShadowHue");
+        static readonly int IonPatternFadeId = Shader.PropertyToID("_IonPatternFade");
+        static readonly int IonPatternOnId = Shader.PropertyToID("_IonPatternOn");
+        static readonly int IonCutHatchId = Shader.PropertyToID("_IonCutHatch");
+
+        /// <summary>
+        /// Linear luma of the zone shade multiplier (art bible rule 7: the shade is a value drop TINTED by the sky).
+        /// Raised from 0.41 (which, with the full sky hue, turned every zone one saturated colour) to a light grey.
+        /// A mood may override it (<see cref="ZoneMood.ShadeValue"/>, e.g. the darker Darkroom).
+        /// </summary>
+        public const float ShadowTintLuma = 0.58f;
+        /// <summary>Fraction of the sky tint's chroma the shade multiplier keeps (0 = grey shade, 1 = the sky's hue).</summary>
+        public const float ShadowTintChroma = 0.26f;
+        /// <summary>Zero-luma hue offset added on the shade side (FlatToon _IonShadowHue), as a fraction of the tint's chroma.</summary>
+        public const float ShadowHueAdd = 0.035f;
+        /// <summary>How much the zone tint replaces each material's own _ShadowTint (FlatToon _IonShadowTintMix).</summary>
+        public const float ShadowTintMix = 1f;
+
+        /// <summary>Pattern fade distances (m) per tier (§3.2): High/Medium 25 → 45, Low 15 → 30.</summary>
+        public static readonly Vector2 PatternFade = new Vector2(25f, 45f), PatternFadeLow = new Vector2(15f, 30f);
+
+        static ZoneMood s_Current;
+        static bool s_HasMood;
+        static bool s_PatternsEnabled = true;
+        static Light s_Sun;
+
+        [RuntimeInitializeOnLoadMethod(RuntimeInitializeLoadType.SubsystemRegistration)]
+        static void ResetMoodStatics()
+        {
+            s_HasMood = false;
+            s_Current = default;
+            s_Sun = null;
+            s_PatternsEnabled = true;
+            AtmosphereBlender.Stop();
+        }
+
+        /// <summary>The mood currently on screen (mid-blend values while a <see cref="BlendTo"/> runs).</summary>
+        public static ZoneMood Current => s_HasMood ? s_Current : ZoneMood.Default;
+
+        /// <summary>The mood a running blend is heading to (or <see cref="Current"/>).</summary>
+        public static ZoneMood Target => AtmosphereBlender.IsBlending ? AtmosphereBlender.To : Current;
+
+        /// <summary>True while a <see cref="BlendTo"/> is in progress.</summary>
+        public static bool IsBlending => AtmosphereBlender.IsBlending;
+
+        /// <summary>
+        /// Applies a mood immediately (captures, tests, zone builds) and cancels any blend in progress.
+        /// Binding (§3.4): call it with the zone's mood BEFORE capturing that zone's diorama shots.
+        /// </summary>
+        public static void ApplyMood(ZoneMood mood)
+        {
+            AtmosphereBlender.Stop();
+            Push(mood);
+        }
+
+        /// <summary>Blends from the current look to <paramref name="mood"/> over <paramref name="seconds"/> (play time; immediate otherwise).</summary>
+        public static void BlendTo(ZoneMood mood, float seconds = 2f)
+        {
+            if (!Application.isPlaying || seconds <= 0f)
+            {
+                ApplyMood(mood);
+                return;
+            }
+            AtmosphereBlender.Begin(Current, mood, seconds);
+        }
+
+        /// <summary>Pattern master switch (debug / settings). Re-applies the pattern globals.</summary>
+        public static bool PatternsEnabled
+        {
+            get => s_PatternsEnabled;
+            set { s_PatternsEnabled = value; ApplyPatternGlobals(); }
+        }
+
+        /// <summary>
+        /// Pushes the pattern globals of Ion/FlatToon for the current quality tier: _IonPatternOn, _IonPatternFade
+        /// (25 → 45 m; Low 15 → 30 m) and _IonCutHatch (1; 0 on Low). Called by moods, Ambience and quality changes.
+        /// </summary>
+        public static void ApplyPatternGlobals()
+        {
+            int tier = QualityTier.Current;
+            Vector2 fade = tier == QualityTier.Low ? PatternFadeLow : PatternFade;
+            Shader.SetGlobalVector(IonPatternFadeId, new Vector4(fade.x, fade.y, 0f, 0f));
+            Shader.SetGlobalFloat(IonPatternOnId, s_PatternsEnabled ? 1f : 0f);
+            Shader.SetGlobalFloat(IonCutHatchId, tier == QualityTier.Low ? 0f : 1f);
+        }
+
+        /// <summary>
+        /// The zone shadow tint as the linear shade multiplier FlatToon uses: a grey of luma
+        /// <see cref="ShadowTintLuma"/> carrying <see cref="ShadowTintChroma"/> of the tint's chroma (its hue kept).
+        /// </summary>
+        public static Color ShadeMultiplier(Color shadowTintSrgb) => ShadeMultiplier(shadowTintSrgb, ShadowTintLuma);
+
+        /// <summary>As above with an explicit shade luma (a mood's <see cref="ZoneMood.ShadeValue"/>).</summary>
+        public static Color ShadeMultiplier(Color shadowTintSrgb, float shadeLuma)
+        {
+            Vector3 chroma = ShadeChroma(shadowTintSrgb, shadeLuma);
+            return new Color(Mathf.Clamp01(shadeLuma + ShadowTintChroma * chroma.x),
+                             Mathf.Clamp01(shadeLuma + ShadowTintChroma * chroma.y),
+                             Mathf.Clamp01(shadeLuma + ShadowTintChroma * chroma.z), 1f);
+        }
+
+        /// <summary>The small zero-luma hue offset FlatToon adds on the shade side (linear).</summary>
+        public static Color ShadeHue(Color shadowTintSrgb, float shadeLuma)
+        {
+            Vector3 chroma = ShadeChroma(shadowTintSrgb, shadeLuma) * ShadowHueAdd;
+            return new Color(chroma.x, chroma.y, chroma.z, 0f);
+        }
+
+        /// <summary>The tint (linear) scaled to <paramref name="luma"/>, minus that luma: its chroma vector (zero luma).</summary>
+        static Vector3 ShadeChroma(Color shadowTintSrgb, float luma)
+        {
+            Color lin = shadowTintSrgb.linear;
+            float l = 0.2126f * lin.r + 0.7152f * lin.g + 0.0722f * lin.b;
+            if (l < 1e-4f) return Vector3.zero;
+            float k = luma / l;
+            return new Vector3(lin.r * k - luma, lin.g * k - luma, lin.b * k - luma);
+        }
+
+        /// <summary>Writes a mood to the sun, the sky material, RenderSettings and the shader globals.</summary>
+        internal static void Push(ZoneMood mood)
+        {
+            s_Current = mood;
+            s_HasMood = true;
+
+            Vector3 toSun = mood.ToSun.sqrMagnitude > 1e-8f ? mood.ToSun.normalized : ToSun;
+            Light sun = FindSun();
+            if (sun != null)
+            {
+                sun.color = mood.SunColor;
+                sun.intensity = mood.SunIntensity;
+                sun.transform.rotation = Quaternion.LookRotation(-toSun, Mathf.Abs(toSun.y) > 0.99f ? Vector3.forward : Vector3.up);
+            }
+
+            if (s_SkyMaterial != null)
+            {
+                s_SkyMaterial.SetColor("_TopColor", mood.SkyTop);
+                s_SkyMaterial.SetColor("_HorizonColor", mood.SkyHorizon);
+                s_SkyMaterial.SetColor("_BottomColor", mood.SkyBottom);
+            }
+
+            RenderSettings.ambientMode = AmbientMode.Trilight;
+            RenderSettings.ambientSkyColor = mood.AmbientSky;
+            RenderSettings.ambientEquatorColor = mood.AmbientEquator;
+            RenderSettings.ambientGroundColor = mood.AmbientGround;
+            RenderSettings.ambientIntensity = 1f;
+
+            RenderSettings.fog = true;
+            RenderSettings.fogMode = FogMode.Linear;
+            RenderSettings.fogColor = mood.SkyHorizon;
+            RenderSettings.fogStartDistance = mood.FogStart;
+            RenderSettings.fogEndDistance = FogEnd;
+
+            Shader.SetGlobalVector(IonAmbientSky, (Vector4)mood.AmbientSky.linear);
+            Shader.SetGlobalVector(IonAmbientEquator, (Vector4)mood.AmbientEquator.linear);
+            Shader.SetGlobalVector(IonAmbientGround, (Vector4)mood.AmbientGround.linear);
+            Shader.SetGlobalVector(IonFogParams, new Vector4(mood.FogStart, mood.FogDensity, 1f, FogMax));
+            Shader.SetGlobalVector(IonFogHeight, new Vector4(FogBelowBoost, FogBelowStart, 1f / FogBelowRamp, 0f));
+            Color top = mood.SkyTop.linear, horizon = mood.SkyHorizon.linear;
+            Shader.SetGlobalVector(IonSkyTop, new Vector4(top.r, top.g, top.b, SkyTopExponent));
+            Shader.SetGlobalVector(IonSkyHorizon, new Vector4(horizon.r, horizon.g, horizon.b, SkyBottomExponent));
+            Shader.SetGlobalVector(IonSkyBottom, (Vector4)mood.SkyBottom.linear);
+            // Golden horizon towards the sun: the mood's sun colour, warmed.
+            Color warm = Color.Lerp(mood.SunColor, SunWarm, 0.5f).linear;
+            Shader.SetGlobalVector(IonSunWarm, new Vector4(warm.r, warm.g, warm.b, SunWarmStrength));
+            Shader.SetGlobalVector(IonSunHalo, (Vector4)Color.Lerp(mood.SunColor, SunHaloColor, 0.5f).linear);
+            Shader.SetGlobalVector(IonGrade, new Vector4(GradeContrast, GradeLift, GradePivot, 1f));
+            Shader.SetGlobalVector(IonSunDirection, new Vector4(toSun.x, toSun.y, toSun.z, SkySunHalo));
+
+            float shadeLuma = mood.ShadeValue > 0f ? mood.ShadeValue : ShadowTintLuma;
+            Color shade = ShadeMultiplier(mood.ShadowTint, shadeLuma);
+            Color hue = ShadeHue(mood.ShadowTint, shadeLuma);
+            Shader.SetGlobalVector(IonShadowTintId, new Vector4(shade.r, shade.g, shade.b, 1f));
+            Shader.SetGlobalVector(IonShadowHueId, new Vector4(hue.r, hue.g, hue.b, 0f));
+            Shader.SetGlobalFloat(IonShadowTintMixId, ShadowTintMix);
+            ApplyPatternGlobals();
+        }
+
+        static Light FindSun()
+        {
+            if (s_Sun != null) return s_Sun;
+            var existing = GameObject.Find(SunName);
+            if (existing != null) s_Sun = existing.GetComponent<Light>();
+            return s_Sun;
         }
     }
 }

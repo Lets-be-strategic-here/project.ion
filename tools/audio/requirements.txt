@@ -1,0 +1,4 @@
+numpy>=1.26
+scipy>=1.11
+soundfile>=0.13   # libsndfile >= 1.1 with Ogg Vorbis (the wheels bundle it)
+pyloudnorm>=0.1.1

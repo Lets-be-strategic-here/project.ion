@@ -9,7 +9,12 @@ namespace Ion.Levels
     /// <see cref="Geo"/>. All positions are local to <c>parent</c>. Deterministic for a given seed, so a room's
     /// terrain can be built twice (world + photo diorama) and come out identical.
     /// Pieces tagged with <see cref="Decor"/> are merged per room by <see cref="DecorCombiner"/>.
+    ///
+    /// DEPRECATED (art bible §10): legacy island terrain for the pre-redesign rooms. Trees and tufts are now
+    /// <see cref="Props.PropKit.Plant(Transform, Vector3, Props.PlantKind, float, float, int)"/>; new zones use the
+    /// Arch kit and PropKit only.
     /// </summary>
+    [System.Obsolete("Legacy island kit: build zones with Ion.Levels.Arch.Arch and Ion.Levels.Props.PropKit.")]
     public static class Kit
     {
         const float GrassDepth = 0.5f;
@@ -97,22 +102,11 @@ namespace Ion.Levels
             Skirt(p, cx, cz, w, d, top, bottom);
         }
 
-        /// <summary>Low-poly tree: box trunk + two stacked cones (~40 triangles) on a soft contact shadow.</summary>
+        /// <summary>Tree (migrated): a PropKit cypress; <paramref name="dark"/> keeps the dark foliage, otherwise a lighter one.</summary>
         public static void Tree(Transform p, Vector3 basePos, float scale = 1f, float yRot = 0f, bool dark = false)
         {
-            float s = scale;
-            var trunk = Geo.Box(p, basePos + new Vector3(0f, 0.6f * s, 0f), new Vector3(0.35f * s, 1.2f * s, 0.35f * s), LevelColors.Trunk, yRot);
-            trunk.name = "Trunk";
-            Tag(trunk, basePos.y, 1.2f * s, 0.6f, 0.05f);
-            Color leaves = dark ? LevelColors.LeavesDark : LevelColors.Leaves;
-            float leafBase = basePos.y + 1.0f * s, leafH = 3.2f * s;
-            var l1 = Geo.Cone(p, basePos + new Vector3(0f, 2.1f * s, 0f), new Vector3(2.2f * s, 2.2f * s, 2.2f * s), leaves, 6, yRot);
-            l1.name = "Leaves";
-            Tag(l1, leafBase, leafH, 0.8f, 0.05f, true);
-            var l2 = Geo.Cone(p, basePos + new Vector3(0f, 3.3f * s, 0f), new Vector3(1.5f * s, 1.7f * s, 1.5f * s), leaves, 6, yRot + 30f);
-            l2.name = "Leaves";
-            Tag(l2, leafBase, leafH, 0.8f, 0.05f, true);
-            Contact(p, basePos, 1.05f * s);
+            Props.PropKit.Plant(p, basePos, Props.PlantKind.Cypress, scale, yRot, Props.PropBuild.SeedOf(basePos, 3),
+                                dark ? (Mat?)null : Mat.Foliage);
         }
 
         /// <summary>Rock: a faceted boulder plus a small pebble, on a soft contact shadow.</summary>
@@ -169,22 +163,11 @@ namespace Ion.Levels
             NoShadow(go);
         }
 
-        /// <summary>Grass tuft: three thin leaning blades (collider-less, no shadow).</summary>
+        /// <summary>Grass tuft (migrated): a small PropKit grass clump.</summary>
         public static void Tuft(Transform p, Vector3 basePos, float scale, float yRot, bool light)
         {
-            Color c = light ? LevelColors.TuftLight : LevelColors.TuftDark;
-            for (int i = 0; i < 3; i++)
-            {
-                float h = scale * (0.34f - 0.06f * i);
-                float yaw = yRot + i * 125f;
-                float tilt = 18f + 8f * i;
-                Quaternion rot = Quaternion.Euler(0f, yaw, 0f) * Quaternion.Euler(tilt, 0f, 0f);
-                Vector3 baseOff = Quaternion.Euler(0f, yaw, 0f) * new Vector3(0f, 0f, 0.05f * scale);
-                Vector3 center = basePos + baseOff + rot * new Vector3(0f, h * 0.5f, 0f) - new Vector3(0f, 0.02f, 0f);
-                var go = Geo.Soft("Tuft", p, Geo.ConeMesh(3), center, rot, new Vector3(0.17f * scale, h, 0.17f * scale), c);
-                Tag(go, basePos.y, h, 0.74f, 0.06f);
-                NoShadow(go);
-            }
+            Props.PropKit.Plant(p, basePos, Props.PlantKind.Grass, scale * 0.7f, yRot, Props.PropBuild.SeedOf(basePos, 5),
+                                light ? Mat.FoliageLight : Mat.Foliage);
         }
 
         /// <summary>A small cluster of low-poly flowers (short stem, pentagon bloom, butter centre), collider-less.</summary>

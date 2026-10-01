@@ -1,0 +1,17 @@
+{
+  "detector": {
+    "ignoreRules": [],
+    "ignoreFiles": [],
+    "ignoreValues": [
+      {
+        "rule": "codex-grid-background",
+        "value": "*",
+        "files": [
+          "Assets/WebGLTemplates/Ion/TemplateData/style.css"
+        ],
+        "createdAt": "2026-10-01T16:55:31.823Z",
+        "reason": "user confirmed: loader grid is the intentional Light Table contact-sheet surface (docs/art-bible.md)"
+      }
+    ]
+  }
+}

@@ -1,4 +1,6 @@
 using System;
+using Ion.Gameplay.State;
+using Ion.Presentation;
 using Ion.Projection;
 using UnityEngine;
 using UnityEngine.InputSystem;
@@ -6,8 +8,9 @@ using UnityEngine.InputSystem;
 namespace Ion.Gameplay
 {
     /// <summary>
-    /// The instant camera. Once <see cref="Unlocked"/>, C toggles camera mode; in camera mode hold RMB to
-    /// raise the viewfinder and press LMB to take a photo (costs one film). The photo goes to the inventory.
+    /// The instant camera. Once <see cref="Unlocked"/>, C toggles camera mode; in camera mode hold Shift (or
+    /// RMB) to raise the viewfinder and press LMB to take a photo (costs one film). The photo goes to the
+    /// inventory, and the shot is a rewindable change (R gives the film back).
     /// </summary>
     [DisallowMultipleComponent]
     public sealed class InstantCamera : MonoBehaviour
@@ -38,9 +41,18 @@ namespace Ion.Gameplay
                 if (value == _unlocked) return;
                 _unlocked = value;
                 if (!value) SetCameraMode(false);
-                else if (Time.timeSinceLevelLoad > 1f) GameplayUI.Toast("Got the instant camera - press C");
+                else if (Time.timeSinceLevelLoad > 1f) GameplayUI.Toast("Instant camera  " + UIUtil.Key("C") + " take it out");
                 Changed?.Invoke();
             }
+        }
+
+        /// <summary>Sets <see cref="Unlocked"/> without the toast (rewind, checkpoint restore, the camera stand).</summary>
+        public void SetUnlockedSilently(bool value)
+        {
+            if (value == _unlocked) return;
+            _unlocked = value;
+            if (!value) SetCameraMode(false);
+            Changed?.Invoke();
         }
 
         /// <summary>Remaining shots.</summary>
@@ -59,7 +71,7 @@ namespace Ion.Gameplay
         /// <summary>Camera is out (photo holding is disabled meanwhile).</summary>
         public bool IsCameraMode { get; private set; }
 
-        /// <summary>Viewfinder is up (RMB held in camera mode).</summary>
+        /// <summary>Viewfinder is up (Shift / RMB held in camera mode).</summary>
         public bool IsRaised { get; private set; }
 
         /// <summary>Raised when Unlocked, Film, camera mode or raise state changes.</summary>
@@ -96,15 +108,14 @@ namespace Ion.Gameplay
         void Update()
         {
             var kb = Keyboard.current;
-            var mouse = Mouse.current;
 
-            if ((_fpc != null && !_fpc.InputEnabled) || kb == null || mouse == null)
+            if ((_fpc != null && (!_fpc.InputEnabled || _fpc.Frozen)) || kb == null)
             {
                 SetRaised(false);
                 return;
             }
 
-            if (_unlocked && kb.cKey.wasPressedThisFrame)
+            if (_unlocked && IonInput.Active && kb.cKey.wasPressedThisFrame)
                 SetCameraMode(!IsCameraMode);
 
             if (!IsCameraMode)
@@ -113,10 +124,9 @@ namespace Ion.Gameplay
                 return;
             }
 
-            bool locked = Cursor.lockState == CursorLockMode.Locked;
-            SetRaised(locked && mouse.rightButton.isPressed);
+            SetRaised(IonInput.RaiseHeld);
 
-            if (IsRaised && mouse.leftButton.wasPressedThisFrame)
+            if (IsRaised && IonInput.PrimaryPressedThisFrame)
                 TryCapture();
         }
 
@@ -158,14 +168,30 @@ namespace Ion.Gameplay
             _fpc.SnapPitchLevel(PhotoHolder.LevelSnapDegrees);
             _fpc.ResetViewEffects(); // exact eye pose and base FOV (no head bob / FOV punch in the photo)
             var t = cam.transform;
-            var photo = ps.Capture(new Pose(t.position, t.rotation), CaptureFovY, CaptureAspect, SnapshotLabel, CapturePreviewWidth);
+            var photo = ps.Capture(new Pose(t.position, t.rotation), CaptureFovY, CaptureAspect, SnapshotLabel, Mathf.Max(CapturePreviewWidth, ProjectionSystem.DefaultPreviewWidth));
             if (photo == null) return null;
 
+            int filmBefore = _film;
             Film = _film - 1;
             Viewfinder.Flash();
             if (_inventory != null) _inventory.Add(photo);
+            var history = WorldHistory.Instance;
+            if (history != null)
+            {
+                history.Push(new CaptureChange
+                {
+                    Photo = photo,
+                    InventoryIndex = _inventory != null ? _inventory.IndexOf(photo) : -1,
+                    FilmBefore = filmBefore,
+                    Inventory = _inventory,
+                    Camera = this,
+                    SafePose = WorldHistory.SafePoseNow(),
+                });
+            }
             GameplayUI.PhotoPrinted(photo);
-            GameplayUI.Toast(_film > 0 ? "Click! Photo added (C to put the camera away)" : "Click! That was the last of the film");
+            GameplayUI.Toast(_film > 0
+                ? "Photo added   " + UIUtil.Key("C") + " put the camera away"
+                : "That was the last of the film   " + UIUtil.Key("R") + " gives it back");
             Captured?.Invoke(photo);
             return photo;
         }

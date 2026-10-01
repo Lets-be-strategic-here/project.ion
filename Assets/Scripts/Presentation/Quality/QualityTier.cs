@@ -4,10 +4,11 @@ using UnityEngine;
 namespace Ion.Presentation
 {
     /// <summary>
-    /// Global quality tier every effect keys its cost off: 0 = Low, 1 = Medium, 2 = High.
+    /// Global quality tier every effect keys its cost off: 0 = Low, 1 = Medium, 2 = High, 3 = Ultra (strong machines:
+    /// local lights, 2-cascade soft shadows, bloom, AO, extra detail; see AdaptiveQuality and UltraFx).
     /// <see cref="Current"/> is the effective tier. The player's choice (<see cref="Preference"/>) is
     /// persisted in PlayerPrefs "ion.quality": -1 = Auto (AdaptiveQuality picks the tier from frame
-    /// time), 0..2 = a fixed tier. <see cref="Changed"/> fires on the main thread whenever
+    /// time), 0..3 = a fixed tier. <see cref="Changed"/> fires on the main thread whenever
     /// <see cref="Current"/> changes. Handlers should be cheap; tier changes are rare (seconds apart).
     /// </summary>
     public static class QualityTier
@@ -16,6 +17,9 @@ namespace Ion.Presentation
         public const int Low = 0;
         public const int Medium = 1;
         public const int High = 2;
+        public const int Ultra = 3;
+        /// <summary>Highest tier.</summary>
+        public const int Max = Ultra;
         public const string PrefKey = "ion.quality";
 
         const int NotLoaded = -2;
@@ -29,7 +33,7 @@ namespace Ion.Presentation
         /// <summary>Fires after <see cref="Preference"/> changes (Auto vs a fixed tier).</summary>
         public static event Action PreferenceChanged;
 
-        /// <summary>Effective tier: 0 Low, 1 Medium, 2 High.</summary>
+        /// <summary>Effective tier: 0 Low, 1 Medium, 2 High, 3 Ultra.</summary>
         public static int Current
         {
             get
@@ -39,7 +43,7 @@ namespace Ion.Presentation
             }
         }
 
-        /// <summary>Persisted choice: -1 Auto, else 0..2.</summary>
+        /// <summary>Persisted choice: -1 Auto, else 0..3.</summary>
         public static int Preference
         {
             get
@@ -51,6 +55,9 @@ namespace Ion.Presentation
 
         public static bool IsAuto => Preference == Auto;
 
+        /// <summary>True on the Ultra tier.</summary>
+        public static bool IsUltra => Current >= Ultra;
+
         [RuntimeInitializeOnLoadMethod(RuntimeInitializeLoadType.SubsystemRegistration)]
         static void ResetStatics()
         {
@@ -61,13 +68,13 @@ namespace Ion.Presentation
         }
 
         /// <summary>
-        /// Sets the player's preference: -1 = Auto, 0..2 = fixed tier. Persisted.
+        /// Sets the player's preference: -1 = Auto, 0..3 = fixed tier. Persisted.
         /// A fixed tier applies immediately; Auto keeps the current tier and lets AdaptiveQuality adjust it.
         /// </summary>
         public static void Set(int tier)
         {
             EnsureLoaded();
-            tier = Mathf.Clamp(tier, Auto, High);
+            tier = Mathf.Clamp(tier, Auto, Max);
             bool prefChanged = tier != s_Preference;
             s_Preference = tier;
             if (prefChanged)
@@ -84,7 +91,7 @@ namespace Ion.Presentation
         {
             EnsureLoaded();
             if (s_Preference != Auto) return;
-            SetCurrent(Mathf.Clamp(tier, Low, High));
+            SetCurrent(Mathf.Clamp(tier, Low, Max));
         }
 
         public static string Name(int tier)
@@ -94,7 +101,8 @@ namespace Ion.Presentation
                 case Auto: return "Auto";
                 case Low: return "Low";
                 case Medium: return "Med";
-                default: return "High";
+                case High: return "High";
+                default: return "Ultra";
             }
         }
 
@@ -109,7 +117,7 @@ namespace Ion.Presentation
         {
             if (s_Preference != NotLoaded) return;
             int pref = PlayerPrefs.GetInt(PrefKey, Auto);
-            if (pref < Auto || pref > High) pref = Auto;
+            if (pref < Auto || pref > Max) pref = Auto;
             s_Preference = pref;
             s_Current = pref == Auto ? High : pref;
         }

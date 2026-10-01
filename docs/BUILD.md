@@ -64,6 +64,29 @@ textures, WebGL2 only, and the custom template `PROJECT:Ion` (`Assets/WebGLTempl
 Web player it only installs when the page URL has `?debug=1`, e.g. `http://localhost:8080/?debug=1`.
 Automation scripts must append it.
 
+Placement has two paths. `Place` is immediate: the whole cut and paste lands in one frame, which is what the
+solvability tests use. `PlacePress` is the player's LMB path. The press-in holds the view still with the raised
+photo covering exactly the frustum. Behind it, `ProjectionSystem.BeginStagedPlace` spreads the cuts, the paste
+and the collider cooking over the next frames, at most `StageBudgetMs` (6 ms) per frame and nearest first.
+While that runs, an original's collider stays on until its cut piece's collider has been cooked. The swap
+(`CommitStagedPlace`, which raises the `Placed` event) happens when the work is done. A press cancelled by R,
+by lowering the photo or by a restart undoes the staged placement silently. `PlacePress` logs the begin
+frame's cost and then the maximum staged work per frame and the cost of the swap.
+
+### Pointer lock and input (manual checklist)
+
+The page owns the pointer lock (`Assets/WebGLTemplates/Ion/index.html` + `Assets/Plugins/WebGL/IonPointerLock.jslib`;
+Unity reads it through `Ion.Gameplay.PointerLock`). Check in Chrome, Edge and Firefox on macOS and Windows:
+
+- Fresh load: one click on the loading card's "Click to play" starts the game locked; that click never raises, places or presses.
+- Esc, then click within a second: nothing happens (no error loop); the pause card's bar fills, then one click resumes.
+- Hold Shift (photo up), alt-tab away and back: the photo is down, and a held Shift must be released before it raises again.
+- Space / arrow keys / Tab never scroll the page or move focus away from the game.
+- The settings card (after Esc) can be clicked without capturing the mouse; the end card's "Play again" re-captures it in the same click.
+
+The PlayMode tests `RewindTests` and `SwitchTests` (Lead D) build their own small world and simulate the lock
+(`PointerLock.Simulate`) and the raise / click devices (`IonInput.UseSimulatedDevices`).
+
 ## 4. Serve locally
 
 ```bash
@@ -72,6 +95,8 @@ PORT=9000 scripts/serve-web.sh  # another port
 ```
 
 Open the page in desktop Chrome. Append `?dpr=2` to the URL to render at full Retina resolution.
+Graphics tiers (Settings card after Esc, or `IonDebug.Quality` with `?debug=1`): Low / Med / High / Ultra / Auto.
+Ultra (local lights, 2-cascade soft shadows, HDR bloom, extra detail) is described in the art bible §6.3.1.
 By default the device pixel ratio is capped at 1.5 for frame rate.
 
 ## 5. CI / GitHub Pages

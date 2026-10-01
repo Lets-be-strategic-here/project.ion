@@ -73,6 +73,20 @@ namespace Ion.Gameplay
             Changed?.Invoke();
         }
 
+        /// <summary>
+        /// Replaces the whole list (same photo references, same order) and the selection: checkpoint
+        /// restores. Nulls and duplicates are skipped. Raises <see cref="Changed"/> once.
+        /// </summary>
+        public void SetAll(IReadOnlyList<PhotoData> photos, int selected)
+        {
+            _photos.Clear();
+            if (photos != null)
+                for (int i = 0; i < photos.Count; i++)
+                    if (photos[i] != null && !_photos.Contains(photos[i])) _photos.Add(photos[i]);
+            _selected = _photos.Count == 0 ? -1 : Mathf.Clamp(selected < 0 ? 0 : selected, 0, _photos.Count - 1);
+            Changed?.Invoke();
+        }
+
         public void Clear()
         {
             if (_photos.Count == 0) return;

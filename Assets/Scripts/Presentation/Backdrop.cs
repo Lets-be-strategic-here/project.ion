@@ -5,10 +5,12 @@ using UnityEngine.Rendering;
 namespace Ion.Presentation
 {
     /// <summary>
-    /// Distant scenery so every view has depth beyond the rooms: a ring of low-poly floating islands
-    /// (one with a waterfall and mist), soft mountains and mesas on the horizon and a sea of cloud clumps
-    /// below. One procedural mesh, one renderer, one draw call; Ion/Backdrop shading (no shadows, aerial
-    /// perspective into the sky colour). Deterministic.
+    /// Distant scenery so every view has depth beyond the rooms, in the "Light Table" language (art bible §1–§2):
+    /// a ring of floating off-white terraces with stepped planar undersides carrying stacked slab towers (one with
+    /// a spillway waterfall and mist), stepped rectilinear plateaus and soft mountains on the horizon, and a sea
+    /// of cloud clumps below. Every built form is axis-aligned boxes (right angles only; curves are left to the
+    /// clouds, mountains and cypresses). One procedural mesh, one renderer, one draw call; Ion/Backdrop shading
+    /// (no shadows, aerial perspective into the sky colour). Deterministic.
     ///
     /// Depth layers: every vertex carries its layer's haze in uv0.x (near islands and clouds ~40 %, mesas
     /// ~60 %, mountains ~80 %), so the three bands separate instead of reading as one flat cut-out.
@@ -31,25 +33,26 @@ namespace Ion.Presentation
         const float HazeIslands = 0.36f, HazeClouds = 0.4f, HazeMesas = 0.56f, HazeMountains = 0.8f;
 
         // Vertex colours (sRGB albedo; alpha = 1 - extra haze).
-        static readonly Color32 Grass = new Color32(0xA6, 0xD0, 0x86, 0xFF);
-        static readonly Color32 GrassLip = new Color32(0x94, 0xC4, 0x78, 0xFF);
-        static readonly Color32 Dirt = new Color32(0xEE, 0xD2, 0xAE, 0xFF);
-        static readonly Color32 DirtDark = new Color32(0xDC, 0xB8, 0x98, 0xFF);
-        static readonly Color32 Rock = new Color32(0xB0, 0x9C, 0xB2, 0xFF);
         static readonly Color32 Lilac = new Color32(0x6E, 0x5E, 0x9A, 0xFF);   // shade target for forms
-        static readonly Color32 RockUnder = Color32.Lerp(new Color32(0xB0, 0x9C, 0xB2, 0xFF), new Color32(0x6E, 0x5E, 0x9A, 0xFF), 0.35f);
-        static readonly Color32 Leaves = new Color32(0x8C, 0xBC, 0x86, 0xFF);
         static readonly Color32 MountainRock = new Color32(0xA9, 0xA4, 0xCC, 0xFF);
         static readonly Color32 MountainLight = new Color32(0xC2, 0xB9, 0xDA, 0xFF);
         static readonly Color32 MountainCap = new Color32(0xF6, 0xEC, 0xEA, 0xFF);
-        static readonly Color32 MesaRock = new Color32(0xEC, 0xC2, 0xA6, 0xFF);
-        static readonly Color32 MesaBand = new Color32(0xDE, 0xAA, 0x94, 0xFF);
         static readonly Color32 MesaTop = new Color32(0xB8, 0xCF, 0x92, 0xFF);
         static readonly Color32 Water = new Color32(0xE4, 0xF4, 0xF8, 0xF0);
         static readonly Color32 Mist = new Color32(0xFF, 0xFC, 0xF6, 0xE0);
         static readonly Color32 CloudWhite = new Color32(0xFF, 0xFD, 0xF8, 0xFF);
         static readonly Color32 CloudCream = new Color32(0xFF, 0xF1, 0xE2, 0xFF);
         static readonly Color32 CloudUnder = new Color32(0xE6, 0xC6, 0xDA, 0xFF);   // pink-lilac belly
+
+        // Light Table architecture at a distance (Paper / Limestone / Concrete, shade towards lilac).
+        static readonly Color32 PaperTop = new Color32(0xF4, 0xF1, 0xEA, 0xFF);
+        static readonly Color32 PaperSide = new Color32(0xEF, 0xEB, 0xE3, 0xFF);
+        static readonly Color32 LimeTop = new Color32(0xE2, 0xDA, 0xCA, 0xFF);
+        static readonly Color32 LimeSide = new Color32(0xD7, 0xCD, 0xBB, 0xFF);
+        static readonly Color32 ConcreteSide = new Color32(0xBD, 0xB8, 0xAE, 0xFF);
+        static readonly Color32 Underside = Color32.Lerp(new Color32(0xBD, 0xB8, 0xAE, 0xFF), new Color32(0x6E, 0x5E, 0x9A, 0xFF), 0.35f);
+        static readonly Color32 GapShade = Color32.Lerp(new Color32(0xBD, 0xB8, 0xAE, 0xFF), new Color32(0x6E, 0x5E, 0x9A, 0xFF), 0.5f);
+        static readonly Color32 Cypress = new Color32(0x6E, 0x9A, 0x5C, 0xFF);
 
         /// <summary>
         /// Builds the backdrop around <paramref name="center"/> (the middle of the rooms, floor level).
@@ -129,15 +132,16 @@ namespace Ion.Presentation
 
         static void BuildMesas(Builder b, System.Random rng)
         {
+            // Stepped rectilinear plateaus (three receding tiers), the base lost in the haze.
             const int count = 12;
             for (int i = 0; i < count; i++)
             {
                 float ang = i * 360f / count + 15f + R(rng, -8f, 8f);
                 float dist = R(rng, 470f, 560f);
-                // Broad, flat-topped buttes (wider than the visible height), the base lost in the haze.
-                float radius = R(rng, 48f, 80f);
-                float top = R(rng, -30f, 8f);
-                b.Mesa(Polar(ang, dist, -120f), radius, top + 120f, R(rng, 0f, 360f), 8, rng);
+                Vector3 c = Snap(Polar(ang, dist, -120f), 2f);
+                float w = Mathf.Round(R(rng, 80f, 150f) / 4f) * 4f, d = Mathf.Round(R(rng, 60f, 110f) / 4f) * 4f;
+                float top = Mathf.Round(R(rng, -30f, 8f) / 2f) * 2f + 120f;
+                b.Plateau(c, w, d, top, rng);
             }
         }
 
@@ -148,19 +152,22 @@ namespace Ion.Presentation
             {
                 float ang = i * 360f / count + R(rng, -7f, 7f);
                 float dist = R(rng, 250f, 410f);
-                // 0.5x - 2x of a 15 m island, log-uniform: a few big ones, many small ones.
-                float radius = 15f * 0.5f * Mathf.Pow(4f, R(rng, 0f, 1f));
-                float top = R(rng, -28f, 42f);
-                b.Island(Polar(ang, dist, top), radius, R(rng, 0f, 360f), rng, radius < 10f ? rng.Next(0, 2) : rng.Next(1, 5));
+                // 0.5x - 2x of a 30 m terrace, log-uniform: a few big ones, many small ones.
+                float size = 30f * 0.5f * Mathf.Pow(4f, R(rng, 0f, 1f));
+                float top = Mathf.Round(R(rng, -28f, 42f));
+                b.Terrace(Snap(Polar(ang, dist, top), 1f), size, size * R(rng, 0.6f, 1f), rng, size < 20f ? rng.Next(1, 3) : rng.Next(2, 5));
             }
-            // Feature island ahead of the walking direction (+Z), with a waterfall and mist below.
-            Vector3 f = Polar(18f, 330f, 34f);
-            b.Island(f, 32f, 20f, rng, 5);
-            Vector3 lip = f + Polar(198f, 27f, -1.4f); // edge facing the rooms
-            b.Waterfall(lip, 6f, 95f, 198f);
+            // Feature terrace ahead of the walking direction (+Z), with a spillway waterfall and mist below.
+            Vector3 f = Snap(Polar(18f, 330f, 34f), 1f);
+            b.Terrace(f, 64f, 48f, rng, 5);
+            Vector3 lip = f + new Vector3(0f, -1.4f, -24f); // the edge facing the rooms
+            b.Waterfall(lip, 6f, 95f, 180f);
             for (int k = 0; k < 4; k++)
                 b.Puff(lip + new Vector3(R(rng, -9f, 9f), -95f + R(rng, -4f, 6f), R(rng, -9f, 9f)), new Vector3(R(rng, 9f, 15f), R(rng, 4f, 6f), R(rng, 9f, 15f)), rng, Mist);
         }
+
+        static Vector3 Snap(Vector3 v, float step) =>
+            new Vector3(Mathf.Round(v.x / step) * step, v.y, Mathf.Round(v.z / step) * step);
 
         static void BuildCloudSea(Builder b, System.Random rng)
         {
@@ -293,73 +300,95 @@ namespace Ion.Presentation
                 Apex(r2, apex, MountainCap, true);
             }
 
-            public void Mesa(Vector3 baseCenter, float radius, float height, float rot, int sides, System.Random rng)
+            /// <summary>Axis-aligned box (right angles only) with top / side / bottom colours.</summary>
+            public void Box(Vector3 min, Vector3 max, Color32 top, Color32 side, Color32 bottom)
             {
-                Vector3[] r0 = Ring(baseCenter, radius, sides, rot, rng, 0.12f);
-                float y1 = height * 0.72f, y2 = height * 0.8f;
-                Vector3[] r1 = Ring(baseCenter + Vector3.up * y1, radius * 0.86f, sides, rot, rng, 0.06f);
-                Vector3[] r2 = Ring(baseCenter + Vector3.up * y2, radius * 0.83f, sides, rot, rng, 0.04f);
-                Vector3[] r3 = Ring(baseCenter + Vector3.up * height, radius * 0.74f, sides, rot, rng, 0.04f);
-                // Walls shaded towards lilac (the base a little more), so the flat-topped form reads.
-                Band(r0, r1, Color32.Lerp(MesaRock, Lilac, 0.28f));
-                Band(r1, r2, Color32.Lerp(MesaBand, Lilac, 0.22f));
-                Band(r2, r3, Color32.Lerp(MesaRock, Lilac, 0.18f));
-                Cap(r3, baseCenter + Vector3.up * height, MesaTop, true);
+                Vector3 a0 = new Vector3(min.x, min.y, min.z), a1 = new Vector3(max.x, min.y, min.z),
+                        a2 = new Vector3(max.x, min.y, max.z), a3 = new Vector3(min.x, min.y, max.z),
+                        b0 = new Vector3(min.x, max.y, min.z), b1 = new Vector3(max.x, max.y, min.z),
+                        b2 = new Vector3(max.x, max.y, max.z), b3 = new Vector3(min.x, max.y, max.z);
+                Quad(b0, b3, b2, b1, top);       // +y
+                Quad(a0, a1, a2, a3, bottom);    // -y
+                Quad(a0, b0, b1, a1, side);      // -z
+                Quad(a2, b2, b3, a3, side);      // +z
+                Quad(a3, b3, b0, a0, side);      // -x
+                Quad(a1, b1, b2, a2, side);      // +x
             }
 
-            public void Island(Vector3 topCenter, float radius, float rot, System.Random rng, int trees)
+            /// <summary>
+            /// A floating Light Table terrace: limestone slab with a drip line, an off-white body, a stepped planar
+            /// underside (no rock spikes), and stacked slab towers (2 m-module slabs offset by quarter steps, each with
+            /// a dark shadow gap) plus a few cypresses on top.
+            /// </summary>
+            public void Terrace(Vector3 topCenter, float width, float depth, System.Random rng, int towers)
             {
-                int sides = 7;
-                Vector3[] top = Ring(topCenter, radius, sides, rot, rng, 0.14f);
-                Vector3[] lip = new Vector3[sides];
-                Vector3[] body = new Vector3[sides];
-                Vector3[] band = new Vector3[sides];
-                float lipH = radius * 0.06f + 0.6f;
-                float bodyH = radius * R(rng, 0.28f, 0.4f);
-                for (int i = 0; i < sides; i++)
+                float hw = Mathf.Round(width * 0.5f), hd = Mathf.Round(depth * 0.5f);
+                Vector3 c = topCenter;
+                float unit = Mathf.Max(1f, Mathf.Round(width / 24f));     // a "metre" of this terrace's grid
+                // Slab + drip groove + body.
+                Box(c + new Vector3(-hw, -unit, -hd), c + new Vector3(hw, 0f, hd), LimeTop, LimeSide, Underside);
+                Box(c + new Vector3(-hw + unit * 0.5f, -unit * 1.5f, -hd + unit * 0.5f), c + new Vector3(hw - unit * 0.5f, -unit, hd - unit * 0.5f), GapShade, GapShade, GapShade);
+                float body = Mathf.Round(R(rng, 3f, 6f)) * unit;
+                Box(c + new Vector3(-hw, -unit * 1.5f - body, -hd), c + new Vector3(hw, -unit * 1.5f, hd), PaperTop, Color32.Lerp(PaperSide, Lilac, 0.08f), Underside);
+                float y = -unit * 1.5f - body;
+                int steps = 2 + rng.Next(0, 2);
+                for (int k = 1; k <= steps; k++)
                 {
-                    Vector3 o = top[i] - topCenter;
-                    lip[i] = topCenter + o * 1.0f + Vector3.down * lipH;
-                    band[i] = topCenter + o * 0.95f + Vector3.down * (lipH + bodyH * 0.45f);
-                    body[i] = topCenter + o * 0.82f + Vector3.down * (lipH + bodyH);
-                }
-                Cap(top, topCenter, Grass, true);
-                Band(lip, top, GrassLip);
-                Band(band, lip, Dirt);
-                Band(body, band, DirtDark);
-
-                // Ragged rocky underside: a jagged mid ring (each vertex at its own depth and radius),
-                // the main spike, and a few smaller hanging spikes, all shaded towards lilac.
-                float depth = radius * R(rng, 0.9f, 1.5f);
-                float bodyY = lipH + bodyH;
-                Vector3[] mid = new Vector3[sides];
-                for (int i = 0; i < sides; i++)
-                {
-                    Vector3 o = top[i] - topCenter;
-                    mid[i] = topCenter + o * R(rng, 0.42f, 0.66f) + Vector3.down * (bodyY + depth * R(rng, 0.22f, 0.5f));
-                }
-                Vector3 apex = topCenter + new Vector3(R(rng, -0.15f, 0.15f) * radius, -(bodyY + depth), R(rng, -0.15f, 0.15f) * radius);
-                Band(mid, body, Color32.Lerp(Rock, Lilac, 0.18f));
-                Apex(mid, apex, RockUnder, false);
-                int spikes = 1 + rng.Next(0, 3);
-                for (int k = 0; k < spikes; k++)
-                {
-                    int i = rng.Next(0, sides);
-                    Vector3 basePt = Vector3.Lerp(Vector3.Lerp(body[i], body[(i + 1) % sides], 0.5f), mid[i], 0.35f);
-                    float sr = radius * R(rng, 0.14f, 0.22f);
-                    Vector3[] sring = Ring(basePt + Vector3.up * sr * 0.4f, sr, 4, R(rng, 0f, 90f), rng, 0.15f);
-                    Apex(sring, basePt + Vector3.down * depth * R(rng, 0.35f, 0.6f), RockUnder, false);
+                    float inset = k * 2f * unit;
+                    if (hw - inset < unit * 2f || hd - inset < unit * 2f) break;
+                    float h = 2f * unit;
+                    Box(c + new Vector3(-hw + inset, y - h, -hd + inset), c + new Vector3(hw - inset, y, hd - inset),
+                        Underside, Color32.Lerp(ConcreteSide, Lilac, 0.15f + 0.08f * k), Underside);
+                    y -= h;
                 }
 
+                // Slab towers on a quarter-step grid.
+                for (int t = 0; t < towers; t++)
+                {
+                    float fx = Mathf.Round(R(rng, -0.6f, 0.6f) * hw / unit) * unit, fz = Mathf.Round(R(rng, -0.6f, 0.6f) * hd / unit) * unit;
+                    float sx = Mathf.Round(R(rng, 3f, 6f)) * unit, sz = Mathf.Round(R(rng, 3f, 6f)) * unit;
+                    int slabs = 1 + rng.Next(0, 4);
+                    float ty = 0f, slab = 2f * unit;
+                    for (int k = 0; k < slabs; k++)
+                    {
+                        float ox = (rng.Next(5) - 2) * 0.25f * unit, oz = (rng.Next(5) - 2) * 0.25f * unit;
+                        Vector3 o = c + new Vector3(fx + ox, ty, fz + oz);
+                        bool paper = (k & 1) == 0;
+                        Box(o + new Vector3(-sx * 0.5f, 0f, -sz * 0.5f), o + new Vector3(sx * 0.5f, slab - 0.125f * unit, sz * 0.5f),
+                            paper ? PaperTop : LimeTop, paper ? PaperSide : ConcreteSide, Underside);
+                        Box(o + new Vector3(-sx * 0.5f + 0.125f * unit, slab - 0.125f * unit, -sz * 0.5f + 0.125f * unit),
+                            o + new Vector3(sx * 0.5f - 0.125f * unit, slab, sz * 0.5f - 0.125f * unit), GapShade, GapShade, GapShade);
+                        ty += slab;
+                    }
+                }
+
+                // A few cypresses (living things may be round).
+                int trees = 1 + rng.Next(0, 3);
                 for (int k = 0; k < trees; k++)
                 {
-                    float a = R(rng, 0f, 360f) * Mathf.Deg2Rad;
-                    float d = R(rng, 0.1f, 0.65f) * radius;
-                    Vector3 p = topCenter + new Vector3(Mathf.Sin(a) * d, 0f, Mathf.Cos(a) * d);
-                    float s = R(rng, 2.2f, 4.2f) * Mathf.Clamp(radius / 18f, 0.7f, 1.4f);
-                    Vector3[] tr = Ring(p + Vector3.up * s * 0.35f, s * 0.55f, 6, R(rng, 0f, 60f), null, 0f);
-                    Apex(tr, p + Vector3.up * s * 2.1f, Leaves, true);
-                    Cap(tr, p + Vector3.up * s * 0.35f, Leaves, false);
+                    Vector3 p = c + new Vector3(R(rng, -0.8f, 0.8f) * hw, 0f, R(rng, -0.8f, 0.8f) * hd);
+                    float s = R(rng, 2.2f, 3.6f) * Mathf.Clamp(width / 30f, 0.7f, 1.4f);
+                    Vector3[] tr = Ring(p + Vector3.up * s * 0.2f, s * 0.38f, 6, R(rng, 0f, 60f), null, 0f);
+                    Apex(tr, p + Vector3.up * s * 2.6f, Cypress, true);
+                    Cap(tr, p + Vector3.up * s * 0.2f, Cypress, false);
+                }
+            }
+
+            /// <summary>Three receding rectilinear tiers (horizon plateaus), walls shaded towards lilac.</summary>
+            public void Plateau(Vector3 baseCenter, float width, float depth, float height, System.Random rng)
+            {
+                float y0 = 0f;
+                float[] tiers = { 0.72f, 0.86f, 1f };
+                float inset = 0f;
+                for (int k = 0; k < tiers.Length; k++)
+                {
+                    float y1 = height * tiers[k];
+                    float hw = width * 0.5f - inset, hd = depth * 0.5f - inset;
+                    Color32 wall = Color32.Lerp(k == 1 ? LimeSide : PaperSide, Lilac, 0.28f - 0.05f * k);
+                    Box(baseCenter + new Vector3(-hw, y0, -hd), baseCenter + new Vector3(hw, y1, hd),
+                        k == tiers.Length - 1 ? MesaTop : LimeTop, wall, Underside);
+                    y0 = y1;
+                    inset += Mathf.Round(R(rng, 4f, 9f));
                 }
             }
 
