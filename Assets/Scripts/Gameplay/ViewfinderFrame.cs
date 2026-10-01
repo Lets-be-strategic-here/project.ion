@@ -4,8 +4,10 @@ using UnityEngine.UI;
 namespace Ion.Gameplay
 {
     /// <summary>
-    /// Screen-space viewfinder for the instant camera: darkens the area outside the 4:3 capture region,
-    /// draws corner brackets and a centre cross, and plays a white flash on capture.
+    /// Screen-space viewfinder for the instant camera: darkens the area outside the capture region (the
+    /// snapshot's 50°, 4:3 frustum as seen through the player camera, so what is framed is what is taken),
+    /// draws corner brackets and a centre cross, and plays the shutter on capture: a short black blink
+    /// (the shutter closing) followed by a white flash that fades.
     /// Built entirely from code (uGUI Images, no sprites/fonts needed).
     /// </summary>
     internal sealed class ViewfinderFrame : MonoBehaviour
@@ -13,28 +15,32 @@ namespace Ion.Gameplay
         const float CornerInset = 28f;
         const float CornerLength = 56f;
         const float CornerThickness = 4f;
-        const float FlashDuration = 0.35f;
+        const float BlinkDuration = 0.07f;
+        const float FlashDuration = 0.32f;
 
         static readonly Color MaskColor = new Color(0f, 0f, 0f, 0.5f);
         static readonly Color LineColor = new Color(1f, 1f, 1f, 0.9f);
 
         Canvas _canvas;
         RectTransform _frame;
-        RectTransform _maskLeft, _maskRight;
+        RectTransform _maskLeft, _maskRight, _maskTop, _maskBottom;
         GameObject _frameRoot;
         Image _flash;
 
         float _aspect = 4f / 3f;
+        float _fovY = 50f;
+        float _lastCamFov = -1f;
         int _lastW = -1, _lastH = -1;
         float _flashT = -1f;
         bool _visible;
 
-        public static ViewfinderFrame Create(float aspect)
+        public static ViewfinderFrame Create(float aspect, float fovY)
         {
             var go = new GameObject("ViewfinderCanvas", typeof(RectTransform));
             go.layer = 5; // UI
             var vf = go.AddComponent<ViewfinderFrame>();
             vf._aspect = aspect;
+            vf._fovY = fovY;
             vf.Build();
             return vf;
         }
@@ -83,6 +89,18 @@ namespace Ion.Gameplay
             _maskRight.anchorMax = new Vector2(1f, 1f);
             _maskRight.pivot = new Vector2(1f, 0.5f);
             _maskRight.anchoredPosition = Vector2.zero;
+
+            _maskTop = MakeImage("MaskT", frameRootRect, MaskColor).rectTransform;
+            _maskTop.anchorMin = new Vector2(0.5f, 1f);
+            _maskTop.anchorMax = new Vector2(0.5f, 1f);
+            _maskTop.pivot = new Vector2(0.5f, 1f);
+            _maskTop.anchoredPosition = Vector2.zero;
+
+            _maskBottom = MakeImage("MaskB", frameRootRect, MaskColor).rectTransform;
+            _maskBottom.anchorMin = new Vector2(0.5f, 0f);
+            _maskBottom.anchorMax = new Vector2(0.5f, 0f);
+            _maskBottom.pivot = new Vector2(0.5f, 0f);
+            _maskBottom.anchoredPosition = Vector2.zero;
 
             var frameGo = new GameObject("Frame", typeof(RectTransform));
             frameGo.layer = 5;
@@ -157,27 +175,30 @@ namespace Ion.Gameplay
         void Layout()
         {
             int w = Screen.width, h = Screen.height;
-            if (w == _lastW && h == _lastH) return;
+            var fpc = FirstPersonController.Current;
+            float camFov = fpc != null ? fpc.BaseFieldOfView : 70f;
+            if (camFov < 1f) camFov = 70f;
+            if (w == _lastW && h == _lastH && Mathf.Approximately(camFov, _lastCamFov)) return;
             _lastW = w;
             _lastH = h;
+            _lastCamFov = camFov;
 
             // Canvas units equal screen pixels (overlay canvas without a scaler).
             float scale = _canvas != null && _canvas.scaleFactor > 0f ? _canvas.scaleFactor : 1f;
             float sw = w / scale, sh = h / scale;
 
-            // The capture uses the camera's vertical FOV, so the 4:3 region spans the full height.
-            float frameH = sh;
-            float frameW = sh * _aspect;
-            if (frameW > sw)
-            {
-                // Narrow window: the region is wider than the screen; show what is visible.
-                frameW = sw;
-            }
+            // Footprint of the capture frustum (fovY, aspect) on the player camera's (camFov) image.
+            float frac = Mathf.Tan(_fovY * 0.5f * Mathf.Deg2Rad) / Mathf.Tan(camFov * 0.5f * Mathf.Deg2Rad);
+            float frameH = Mathf.Min(sh, sh * frac);
+            float frameW = Mathf.Min(sw, sh * frac * _aspect);
 
             _frame.sizeDelta = new Vector2(frameW, frameH);
             float side = Mathf.Max(0f, (sw - frameW) * 0.5f);
+            float band = Mathf.Max(0f, (sh - frameH) * 0.5f);
             _maskLeft.sizeDelta = new Vector2(side, 0f);
             _maskRight.sizeDelta = new Vector2(side, 0f);
+            _maskTop.sizeDelta = new Vector2(frameW, band);
+            _maskBottom.sizeDelta = new Vector2(frameW, band);
         }
 
         void Update()
@@ -186,8 +207,13 @@ namespace Ion.Gameplay
 
             if (_flashT >= 0f)
             {
-                _flashT += Time.unscaledDeltaTime;
-                float a = 1f - _flashT / FlashDuration;
+                _flashT += Mathf.Min(Time.unscaledDeltaTime, 0.04f); // a capture hitch must not skip the blink
+                if (_flashT < BlinkDuration)
+                {
+                    _flash.color = new Color(0.04f, 0.04f, 0.05f, 0.94f);
+                    return;
+                }
+                float a = 1f - (_flashT - BlinkDuration) / FlashDuration;
                 if (a <= 0f)
                 {
                     _flashT = -1f;
@@ -196,7 +222,7 @@ namespace Ion.Gameplay
                 }
                 else
                 {
-                    _flash.color = new Color(1f, 1f, 1f, a * a * 0.9f);
+                    _flash.color = new Color(1f, 0.99f, 0.96f, a * a * 0.9f);
                 }
             }
         }

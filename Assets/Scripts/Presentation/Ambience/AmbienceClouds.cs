@@ -208,7 +208,7 @@ namespace Ion.Presentation
         /// 3-5 flattened, jittered icosphere puffs merged into one flat-shaded mesh with a flat base.
         /// Roughly 4.5 m wide and 1.3 m tall at scale 1.
         /// </summary>
-        static Mesh BuildCloudMesh(System.Random rng, int subdiv, string name)
+        internal static Mesh BuildCloudMesh(System.Random rng, int subdiv, string name, bool readable = false)
         {
             BuildIcosphere(subdiv, out List<Vector3> sphereV, out List<int> sphereT);
 
@@ -260,9 +260,16 @@ namespace Ion.Presentation
             var mesh = new Mesh { name = name };
             mesh.SetVertices(verts);
             mesh.SetNormals(normals);
+            if (readable)
+            {
+                // World (FlatToon) materials multiply by vertex colour: plain white (alpha as in Geo meshes).
+                var colors = new List<Color32>(verts.Count);
+                for (int i = 0; i < verts.Count; i++) colors.Add(new Color32(255, 255, 255, 255));
+                mesh.SetColors(colors);
+            }
             mesh.SetTriangles(tris, 0);
             mesh.RecalculateBounds();
-            mesh.UploadMeshData(true); // never read back on the CPU
+            if (!readable) mesh.UploadMeshData(true); // never read back on the CPU (photo clouds stay readable: they get cut)
             return mesh;
         }
 

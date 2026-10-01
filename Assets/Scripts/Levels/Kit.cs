@@ -204,12 +204,25 @@ namespace Ion.Levels
         }
 
         /// <summary>Puffy cloud of three boxes.</summary>
+        static readonly System.Collections.Generic.List<Mesh> s_CloudMeshes = new System.Collections.Generic.List<Mesh>();
+
+        /// <summary>
+        /// A puffy low-poly cloud: the same flattened-icosphere mesh as the sky's ambient clouds (so clouds
+        /// pasted from a photo match the world's), sliceable, no collider.
+        /// </summary>
         public static void Cloud(Transform p, Vector3 center, float scale = 1f)
         {
-            float s = scale;
-            Geo.Box(p, center, new Vector3(4f * s, 1.2f * s, 2.2f * s), LevelColors.Cloud).name = "Cloud";
-            Geo.Box(p, center + new Vector3(-0.9f * s, 0.7f * s, 0.1f * s), new Vector3(1.8f * s, 1.2f * s, 1.6f * s), LevelColors.Cloud).name = "Cloud";
-            Geo.Box(p, center + new Vector3(0.8f * s, 0.5f * s, -0.1f * s), new Vector3(1.4f * s, 1f * s, 1.4f * s), LevelColors.Cloud).name = "Cloud";
+            if (s_CloudMeshes.Count == 0 || s_CloudMeshes[0] == null)
+            {
+                s_CloudMeshes.Clear();
+                var rng = new System.Random(4242);
+                for (int i = 0; i < 3; i++)
+                    s_CloudMeshes.Add(Ion.Presentation.AmbienceClouds.BuildCloudMesh(rng, 1, "Ion_PhotoCloud" + i, true));
+            }
+            int k = Mathf.Abs(Mathf.RoundToInt(center.x * 7f + center.y * 3f + center.z)) % s_CloudMeshes.Count;
+            var go = Geo.Soft("Cloud", p, s_CloudMeshes[k], center, Quaternion.Euler(0f, (center.x * 37f) % 360f, 0f), Vector3.one * scale, LevelColors.Cloud);
+            var r = go.GetComponent<MeshRenderer>();
+            r.shadowCastingMode = UnityEngine.Rendering.ShadowCastingMode.Off;
         }
 
         /// <summary>Short wooden post (bridge anchors, fences).</summary>

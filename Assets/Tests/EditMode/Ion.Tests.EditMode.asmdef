@@ -3,6 +3,7 @@
     "rootNamespace": "Ion.Tests",
     "references": [
         "Ion.Runtime",
+        "UnityEngine.UI",
         "UnityEngine.TestRunner",
         "UnityEditor.TestRunner"
     ],

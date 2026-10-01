@@ -14,7 +14,7 @@ namespace Ion.Gameplay
         const string PromptCameraMode = "Hold RMB  aim camera      C  put camera away";
         const string PromptNoFilm = "Out of film      C  put camera away";
         const string PromptPickup = "E  pick up photo";
-        const string PromptRaiseHint = "Hold RMB  hold up a photo";
+        const string PromptRaiseHint = "RMB  raise photo";
         static readonly string[] s_ShootPrompts =
         {
             PromptNoFilm,

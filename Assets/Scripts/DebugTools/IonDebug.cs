@@ -33,6 +33,10 @@ namespace Ion.DebugTools
     ///   Spectate("x,y,z,yaw,pitch")  freezes the player and puts the camera at a room-local pose
     ///                       (screenshots of islands from outside); Spectate("") hands it back.
     ///   Place logs "[IonDebug] Place took N ms" (the whole cut + paste, measured around PhotoHolder.Place).
+    ///
+    /// Availability: always in the Editor (Play mode, PlayMode tests). In a Web player build the harness
+    /// only installs when the page URL carries <c>?debug=1</c> (e.g. http://host/?debug=1), so a public
+    /// build cannot be driven (teleport, give all photos) from the browser console.
     /// </summary>
     [DisallowMultipleComponent]
     public sealed class IonDebug : MonoBehaviour
@@ -47,10 +51,46 @@ namespace Ion.DebugTools
         [RuntimeInitializeOnLoadMethod(RuntimeInitializeLoadType.AfterSceneLoad)]
         static void Install() => Ensure();
 
-        /// <summary>Returns the harness, creating it if needed.</summary>
+        /// <summary>
+        /// True when the harness may run: always in the Editor and non-web players; in a Web player only
+        /// with a <c>debug=1</c> (or <c>debug=true</c>) query parameter in the page URL.
+        /// </summary>
+        public static bool Allowed
+        {
+            get
+            {
+#if UNITY_WEBGL && !UNITY_EDITOR
+                return UrlHasDebugFlag(Application.absoluteURL);
+#else
+                return true;
+#endif
+            }
+        }
+
+        /// <summary>True if <paramref name="url"/>'s query string has debug=1 / debug=true.</summary>
+        public static bool UrlHasDebugFlag(string url)
+        {
+            if (string.IsNullOrEmpty(url)) return false;
+            int q = url.IndexOf('?');
+            if (q < 0) return false;
+            int hash = url.IndexOf('#', q);
+            string query = hash >= 0 ? url.Substring(q + 1, hash - q - 1) : url.Substring(q + 1);
+            foreach (string pair in query.Split('&'))
+            {
+                int eq = pair.IndexOf('=');
+                string key = eq >= 0 ? pair.Substring(0, eq) : pair;
+                string value = eq >= 0 ? pair.Substring(eq + 1) : string.Empty;
+                if (!key.Equals("debug", StringComparison.OrdinalIgnoreCase)) continue;
+                if (value == "1" || value.Equals("true", StringComparison.OrdinalIgnoreCase)) return true;
+            }
+            return false;
+        }
+
+        /// <summary>Returns the harness, creating it if needed (null when not <see cref="Allowed"/>).</summary>
         public static IonDebug Ensure()
         {
             if (Instance != null) return Instance;
+            if (!Allowed) return null;
             var existing = FindFirstObjectByType<IonDebug>();
             if (existing != null) return Instance = existing;
             var go = new GameObject(ObjectName);
@@ -60,6 +100,11 @@ namespace Ion.DebugTools
 
         void Awake()
         {
+            if (!Allowed)
+            {
+                Destroy(gameObject);
+                return;
+            }
             if (Instance != null && Instance != this)
             {
                 Destroy(gameObject);
@@ -246,7 +291,9 @@ namespace Ion.DebugTools
             var sw = System.Diagnostics.Stopwatch.StartNew();
             bool ok = holder.Place();
             sw.Stop();
-            Log("Place took " + sw.Elapsed.TotalMilliseconds.ToString("0.0", Inv) + " ms");
+            var ps = ProjectionSystem.Instance;
+            Log("Place took " + sw.Elapsed.TotalMilliseconds.ToString("0.0", Inv) + " ms" +
+                (ps != null ? " (" + ps.LastPlaceProfile + ")" : string.Empty));
             Physics.SyncTransforms();
             if (!ok) Warn("Place: failed");
             return ok;

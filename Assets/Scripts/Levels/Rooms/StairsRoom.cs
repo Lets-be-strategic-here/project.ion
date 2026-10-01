@@ -33,7 +33,7 @@ namespace Ion.Levels
             ctx.SetSpawn(new Vector3(0f, 0f, -8f));
             ctx.AddCheckpoint(new Vector3(0f, LedgeTop, 20f));
 
-            var shot = ctx.RegisterDioramaShot(Marker, 0f, 90f, "Stairs (sideways)");
+            var shot = ctx.RegisterDioramaShot(Marker, 0f, 90f, "Stairs");
             BuildTerrain(ctx.DioramaRoot);
             BuildStairs(ctx.DioramaRoot);
 

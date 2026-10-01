@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using Ion.Projection;
 using UnityEngine;
 
@@ -8,12 +9,41 @@ namespace Ion.Gameplay
     /// Trigger volume that invokes <see cref="OnEnter"/> when the player walks in.
     /// Uses the object's own trigger collider, or adds a box trigger of <see cref="TriggerSize"/>
     /// (bottom-centred on the transform). Physics trigger events plus a bounds check as a fallback;
-    /// fires once per entry.
+    /// fires once per entry. The move itself happens at the peak of a short fade-to-white
+    /// (<see cref="Ion.Presentation.ScreenFx.Transition"/>).
+    ///
+    /// A teleporter is an Interactable, so a photo of it carries a whole copy (a clone of the object). A
+    /// delegate does not survive cloning, so <see cref="OnEnter"/> is kept in a registry under a serialized
+    /// id that the clone inherits: a pasted copy of a teleporter works exactly like the original.
     /// </summary>
     [DisallowMultipleComponent]
     public sealed class Teleporter : MonoBehaviour
     {
-        public Action OnEnter;
+        static readonly Dictionary<int, Action> s_Actions = new Dictionary<int, Action>();
+        static int s_NextId;
+
+        [RuntimeInitializeOnLoadMethod(RuntimeInitializeLoadType.SubsystemRegistration)]
+        static void ResetStatics()
+        {
+            s_Actions.Clear();
+            s_NextId = 0;
+        }
+
+        [SerializeField, HideInInspector] int _actionId;
+
+        /// <summary>What entering does (shared with every photo copy of this teleporter).</summary>
+        public Action OnEnter
+        {
+            get => _actionId != 0 && s_Actions.TryGetValue(_actionId, out Action a) ? a : null;
+            set
+            {
+                if (_actionId == 0) _actionId = ++s_NextId;
+                s_Actions[_actionId] = value;
+            }
+        }
+
+        /// <summary>True for a copy pasted from a photo (debug / tests).</summary>
+        public bool IsPhotoCopy => transform.root.name == "PlacedPhotos";
 
         public Vector3 TriggerSize = new Vector3(1.6f, 2.4f, 1.6f);
         public float Cooldown = 1f;
@@ -96,7 +126,8 @@ namespace Ion.Gameplay
             if (Time.time < _cooldownUntil) return;
             _cooldownUntil = Time.time + Cooldown;
             FireCount++;
-            OnEnter?.Invoke();
+            // Fade to white, move at the peak, fade back (instant when there is no UI).
+            Ion.Presentation.ScreenFx.RunTransition(OnEnter);
         }
     }
 }

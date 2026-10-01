@@ -7,8 +7,8 @@ namespace Ion.Presentation
 {
     /// <summary>
     /// Builds the whole uGUI layer in code: EventSystem (Input System module), a Screen Space
-    /// Overlay canvas on layer 9 "PhotoUI", the photo overlay, crosshair, HUD and click-to-play
-    /// overlay (in that draw order). Idempotent.
+    /// Overlay canvas on layer 9 "PhotoUI", the photo overlay, crosshair, HUD, tutorial line, end card,
+    /// screen effects and click-to-play overlay (in that draw order). Idempotent.
     /// </summary>
     public static class UIFactory
     {
@@ -28,17 +28,14 @@ namespace Ion.Presentation
             canvas.sortingOrder = 10;
             canvas.pixelPerfect = false;
 
-            var scaler = canvasGo.AddComponent<CanvasScaler>();
-            scaler.uiScaleMode = CanvasScaler.ScaleMode.ScaleWithScreenSize;
-            scaler.referenceResolution = new Vector2(1920f, 1080f);
-            scaler.screenMatchMode = CanvasScaler.ScreenMatchMode.MatchWidthOrHeight;
-            scaler.matchWidthOrHeight = 0.5f;
+            IonCanvasScaler.AddTo(canvasGo); // 1920x1080, match 0.5, with a minimum scale
 
             canvasGo.AddComponent<GraphicRaycaster>();
             Canvas = canvas;
             var root = canvasGo.transform;
 
-            // Draw order: photo overlay (+ its flash) < crosshair < HUD < click-to-play.
+            // Draw order: photo overlay < crosshair < HUD < tutorial line < end card < screen effects
+            // (flash / rewind / fade-to-white) < click-to-play.
             var overlay = UIUtil.NewRect("PhotoOverlay", root);
             UIUtil.Stretch(overlay);
             overlay.gameObject.AddComponent<PhotoOverlayUI>();
@@ -49,6 +46,19 @@ namespace Ion.Presentation
             var hud = UIUtil.NewRect("Hud", root);
             UIUtil.Stretch(hud);
             hud.gameObject.AddComponent<Hud>();
+
+            var tutorial = UIUtil.NewRect("Onboarding", root);
+            UIUtil.Stretch(tutorial);
+            tutorial.gameObject.AddComponent<Onboarding>();
+
+            var end = UIUtil.NewRect("EndCard", root);
+            UIUtil.Stretch(end);
+            end.gameObject.AddComponent<EndCard>();
+
+            var fx = UIUtil.NewRect("ScreenFx", root);
+            UIUtil.Stretch(fx);
+            fx.gameObject.AddComponent<ScreenFx>();
+            fx.gameObject.AddComponent<FreshPulse>();
 
             var ctp = UIUtil.NewRect("ClickToPlay", root);
             UIUtil.Stretch(ctp);

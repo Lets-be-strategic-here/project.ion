@@ -13,6 +13,13 @@ namespace Ion.Gameplay
     public sealed class InstantCamera : MonoBehaviour
     {
         public const float CaptureAspect = 4f / 3f;
+        /// <summary>
+        /// Vertical FOV of a snapshot: the same shape as the pre-made photos (50°, 4:3), so a raised snapshot
+        /// fits inside its Polaroid frame like the others instead of filling the whole 70° view.
+        /// </summary>
+        public const float CaptureFovY = 50f;
+        /// <summary>Snapshot preview width (about screen resolution for the raised frame).</summary>
+        public const int CapturePreviewWidth = 1024;
         public const string SnapshotLabel = "Snapshot";
 
         FirstPersonController _fpc;
@@ -81,7 +88,7 @@ namespace Ion.Gameplay
         {
             get
             {
-                if (_viewfinder == null) _viewfinder = ViewfinderFrame.Create(CaptureAspect);
+                if (_viewfinder == null) _viewfinder = ViewfinderFrame.Create(CaptureAspect, CaptureFovY);
                 return _viewfinder;
             }
         }
@@ -149,13 +156,15 @@ namespace Ion.Gameplay
 
             // Same level-view assist as placing, so a snapshot and its paste line up.
             _fpc.SnapPitchLevel(PhotoHolder.LevelSnapDegrees);
+            _fpc.ResetViewEffects(); // exact eye pose and base FOV (no head bob / FOV punch in the photo)
             var t = cam.transform;
-            var photo = ps.Capture(new Pose(t.position, t.rotation), cam.fieldOfView, CaptureAspect, SnapshotLabel);
+            var photo = ps.Capture(new Pose(t.position, t.rotation), CaptureFovY, CaptureAspect, SnapshotLabel, CapturePreviewWidth);
             if (photo == null) return null;
 
             Film = _film - 1;
             Viewfinder.Flash();
             if (_inventory != null) _inventory.Add(photo);
+            GameplayUI.PhotoPrinted(photo);
             GameplayUI.Toast(_film > 0 ? "Click! Photo added (C to put the camera away)" : "Click! That was the last of the film");
             Captured?.Invoke(photo);
             return photo;

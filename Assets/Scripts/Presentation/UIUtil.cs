@@ -9,20 +9,47 @@ namespace Ion.Presentation
         public const int UILayer = 9; // "PhotoUI"
         public const string PhotoShaderName = "Ion/PhotoDisplay";
 
-        static Font s_Font;
+        static Font s_Font, s_BoldFont;
         static Sprite s_Rounded;
         static Sprite s_Circle;
         static Material s_PhotoMaterial;
         static bool s_PhotoMaterialTried;
 
+        /// <summary>
+        /// UI font: Nunito SemiBold (OFL, Resources/Fonts), the rounded sans the web loader uses, so the
+        /// in-game UI matches the page. Falls back to the built-in LegacyRuntime font.
+        /// </summary>
         public static Font Font
         {
             get
             {
-                if (s_Font == null)
-                    s_Font = Resources.GetBuiltinResource<Font>("LegacyRuntime.ttf");
+                if (s_Font == null) s_Font = Resources.Load<Font>("Fonts/Nunito-SemiBold");
+                if (s_Font == null) s_Font = Resources.GetBuiltinResource<Font>("LegacyRuntime.ttf");
                 return s_Font;
             }
+        }
+
+        /// <summary>Heavy weight (Nunito ExtraBold) used for FontStyle.Bold text instead of faux bold.</summary>
+        public static Font BoldFont
+        {
+            get
+            {
+                if (s_BoldFont == null) s_BoldFont = Resources.Load<Font>("Fonts/Nunito-ExtraBold");
+                if (s_BoldFont == null) s_BoldFont = Font;
+                return s_BoldFont;
+            }
+        }
+
+        /// <summary>Sets the font + style pair: bold text uses the real heavy face (no synthetic emboldening).</summary>
+        public static void SetFontStyle(Text t, FontStyle style)
+        {
+            bool bold = style == FontStyle.Bold || style == FontStyle.BoldAndItalic;
+            Font heavy = BoldFont;
+            bool realBold = bold && heavy != null && heavy != Font;
+            t.font = realBold ? heavy : Font;
+            t.fontStyle = realBold
+                ? (style == FontStyle.BoldAndItalic ? FontStyle.Italic : FontStyle.Normal)
+                : style;
         }
 
         /// <summary>Shared Polaroid-look material for RawImages (null -> default UI material).</summary>
@@ -146,10 +173,9 @@ namespace Ion.Presentation
         {
             var rt = NewRect(name, parent);
             var t = rt.gameObject.AddComponent<Text>();
-            t.font = Font;
+            SetFontStyle(t, style);
             t.text = content;
             t.fontSize = size;
-            t.fontStyle = style;
             t.color = color;
             t.alignment = align;
             t.raycastTarget = false;

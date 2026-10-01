@@ -78,6 +78,19 @@ html, body {
   align-items: center;
   justify-content: center;
   overflow: hidden;
+  /* An instant photo developing: starts dim and colourless, gains colour with the download (--p). */
+  filter: saturate(calc(0.15 + 0.85 * var(--p, 0))) brightness(calc(0.82 + 0.18 * var(--p, 0))) sepia(calc(0.35 * (1 - var(--p, 0))));
+  transition: filter 400ms ease-out;
+}
+/* Milky "undeveloped" veil that clears as loading progresses. */
+.ion-photo::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background: radial-gradient(120% 90% at 50% 40%, rgba(255, 250, 240, 0.0), rgba(255, 250, 240, 0.55));
+  opacity: calc(1 - var(--p, 0));
+  transition: opacity 400ms ease-out;
+  pointer-events: none;
 }
 
 /* viewfinder corner marks */
@@ -109,19 +122,45 @@ html, body {
   background: rgba(43, 47, 54, 0.1);
   overflow: hidden;
 }
+.ion-bar { position: relative; }
 .ion-bar-fill {
   height: 100%;
   width: 100%;
-  background: var(--ink);
+  background: linear-gradient(90deg, #4a5a6a, var(--ink));
   border-radius: inherit;
   transform: scaleX(0);
   transform-origin: left center;
-  transition: transform 200ms ease-out;
+  transition: transform 250ms ease-out;
+}
+/* A soft light sweep along the bar while loading. */
+.ion-bar::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(90deg, transparent, rgba(255, 255, 255, 0.45), transparent);
+  width: 35%;
+  animation: ion-sweep 1.6s ease-in-out infinite;
+  pointer-events: none;
+}
+@keyframes ion-sweep {
+  from { transform: translateX(-100%); }
+  to { transform: translateX(300%); }
 }
 
+.ion-status-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  gap: 12px;
+}
 .ion-status {
   font-size: 14px;
   color: var(--ink-soft);
+}
+.ion-pct {
+  font-size: 14px;
+  font-weight: 700;
+  color: var(--ink);
   font-variant-numeric: tabular-nums;
 }
 
@@ -266,6 +305,7 @@ kbd {
 }
 
 @media (prefers-reduced-motion: reduce) {
-  #ion-loader, .ion-bar-fill { transition: none; }
+  #ion-loader, .ion-bar-fill, .ion-photo, .ion-photo::after { transition: none; }
+  .ion-bar::after { animation: none; display: none; }
   .ion-polaroid { transform: none; }
 }

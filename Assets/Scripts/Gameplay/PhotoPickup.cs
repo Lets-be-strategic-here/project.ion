@@ -31,6 +31,8 @@ namespace Ion.Gameplay
         public bool Collected { get; private set; }
 
         Transform _visual;
+        Transform _ring;
+        const string RingName = "GlowRing";
         Material _photoMaterial;
         float _phase;
 
@@ -79,7 +81,18 @@ namespace Ion.Gameplay
         void EnsureVisual()
         {
             _visual = transform.Find(VisualName);
+            _ring = transform.Find(RingName);
             if (_visual != null || GetComponentInChildren<Renderer>() != null) return;
+
+            // Soft glow ring resting on the pedestal under the floating photo.
+            var ring = new GameObject(RingName);
+            ring.transform.SetParent(transform, false);
+            ring.transform.localPosition = new Vector3(0f, 0.015f, 0f);
+            ring.AddComponent<MeshFilter>().sharedMesh = RingMesh;
+            var rr = ring.AddComponent<MeshRenderer>();
+            rr.sharedMaterial = Palette.GetEmissive(Palette.Butter, 0.9f);
+            rr.shadowCastingMode = UnityEngine.Rendering.ShadowCastingMode.Off;
+            _ring = ring.transform;
 
             float aspect = Photo != null && Photo.Aspect > 0.1f ? Photo.Aspect : 4f / 3f;
             float photoW = 0.34f;
@@ -132,6 +145,56 @@ namespace Ion.Gameplay
             return _photoMaterial;
         }
 
+        static Mesh s_RingMesh;
+
+        /// <summary>Flat, two-sided ring (inner radius 0.3, outer 0.36, 24 segments).</summary>
+        internal static Mesh RingMesh
+        {
+            get
+            {
+                if (s_RingMesh == null) s_RingMesh = BuildRing(0.3f, 0.36f, 24);
+                return s_RingMesh;
+            }
+        }
+
+        /// <summary>Flat ring in the XZ plane, faces up and down, flat normals.</summary>
+        internal static Mesh BuildRing(float inner, float outer, int segments)
+        {
+            var v = new Vector3[segments * 4 * 2];
+            var n = new Vector3[v.Length];
+            var t = new int[segments * 6 * 2];
+            int vi = 0, ti = 0;
+            for (int side = 0; side < 2; side++)
+            {
+                Vector3 normal = side == 0 ? Vector3.up : Vector3.down;
+                for (int i = 0; i < segments; i++)
+                {
+                    float a0 = i * Mathf.PI * 2f / segments, a1 = (i + 1) * Mathf.PI * 2f / segments;
+                    var d0 = new Vector3(Mathf.Cos(a0), 0f, Mathf.Sin(a0));
+                    var d1 = new Vector3(Mathf.Cos(a1), 0f, Mathf.Sin(a1));
+                    int b = vi;
+                    v[vi++] = d0 * inner; v[vi++] = d0 * outer; v[vi++] = d1 * outer; v[vi++] = d1 * inner;
+                    for (int k = 0; k < 4; k++) n[b + k] = normal;
+                    if (side == 0)
+                    {
+                        t[ti++] = b; t[ti++] = b + 2; t[ti++] = b + 1;
+                        t[ti++] = b; t[ti++] = b + 3; t[ti++] = b + 2;
+                    }
+                    else
+                    {
+                        t[ti++] = b; t[ti++] = b + 1; t[ti++] = b + 2;
+                        t[ti++] = b; t[ti++] = b + 2; t[ti++] = b + 3;
+                    }
+                }
+            }
+            var mesh = new Mesh { name = "Ion_Ring" };
+            mesh.vertices = v;
+            mesh.normals = n;
+            mesh.triangles = t;
+            mesh.RecalculateBounds();
+            return mesh;
+        }
+
         static void RemoveCollider(GameObject go)
         {
             var c = go.GetComponent<Collider>();
@@ -162,6 +225,14 @@ namespace Ion.Gameplay
                 _visual.localPosition = new Vector3(0f, VisualHeight + Mathf.Sin(t * 2f) * 0.05f, 0f);
                 _visual.localRotation = Quaternion.Euler(-12f, t * 40f, 0f);
             }
+            if (Animate && _ring != null)
+            {
+                // Slow breathing glow.
+                float t = Time.time + _phase;
+                float s = 1f + 0.12f * (0.5f + 0.5f * Mathf.Sin(t * 2.4f));
+                _ring.localScale = new Vector3(s, 1f, s);
+                _ring.localRotation = Quaternion.Euler(0f, -t * 25f, 0f);
+            }
 
             // Fallback for touch collection (independent of physics trigger callbacks).
             var player = FirstPersonController.Current;
@@ -175,6 +246,13 @@ namespace Ion.Gameplay
                 Collect(player.GetComponent<PhotoInventory>());
         }
 
+        /// <summary>Puts the photo back where it was (game restart).</summary>
+        public void ResetPickup()
+        {
+            Collected = false;
+            gameObject.SetActive(true);
+        }
+
         /// <summary>Adds the photo to the inventory, toasts, and disables the pickup.</summary>
         public bool Collect(PhotoInventory inventory)
         {
@@ -184,6 +262,7 @@ namespace Ion.Gameplay
             if (Photo != null)
             {
                 inventory.Add(Photo);
+                GameplayUI.PhotoCollected(Photo, FocusPoint);
                 GameplayUI.Toast(string.IsNullOrEmpty(Photo.Label)
                     ? "Picked up a photo"
                     : "Picked up photo: " + Photo.Label);

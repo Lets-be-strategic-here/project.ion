@@ -22,5 +22,18 @@ mergeInto(LibraryManager.library, {
     window.__ionPendingOpen = pending;
     document.addEventListener('pointerup', fire, true);
     document.addEventListener('keyup', fire, true);
+  },
+
+  // 1 while the page's loading card (#ion-loader) is still on screen: the in-game title overlay
+  // waits for it so the two never cross-fade into a double exposure.
+  IonIsLoaderVisible: function () {
+    var l = document.getElementById('ion-loader');
+    return (l && !l.hidden) ? 1 : 0;
+  },
+
+  // The end card is up: the page hides its corner "View projects" link (the card has its own).
+  IonSetEndCardOpen: function (open) {
+    window.__ionEndCard = !!open;
+    if (window.__ionUpdateCornerLink) window.__ionUpdateCornerLink();
   }
 });

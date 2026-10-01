@@ -16,25 +16,37 @@ namespace Ion.Presentation
         /// <summary>True while the overlay is (becoming) visible.</summary>
         public bool IsVisible => _wantVisible;
 
+        /// <summary>Same list, same words as the web page's loading card (index.html).</summary>
         static readonly string[,] Controls =
         {
-            { "W A S D", "Move" },
-            { "Mouse", "Look" },
-            { "Space", "Jump" },
-            { "E", "Interact / pick up" },
-            { "1 - 5  /  Scroll", "Select photo" },
-            { "Hold Right Mouse", "Raise photo" },
-            { "Left Mouse", "Place photo" },
-            { "Q  /  E", "Rotate raised photo" },
-            { "R", "Rewind" },
-            { "C", "Instant camera" },
-            { "Esc", "Release cursor" },
+            { "W A S D", "move" },
+            { "Mouse", "look" },
+            { "Space", "jump" },
+            { "1\u20135  /  Wheel", "choose photo" },
+            { "hold RMB", "raise photo" },
+            { "LMB", "place photo" },
+            { "Q  E", "rotate raised photo" },
+            { "R", "rewind" },
+            { "C", "instant camera" },
+            { "Esc", "release cursor" },
         };
+
+        const float CardW = 760f, CardH = 700f;
 
         CanvasGroup _group;
         Text _cta;
+        RectTransform _ctaButton;
+        Image _ctaBg;
+        RectTransform _card;
         bool _wantVisible = true;
         bool _hasPlayed;
+        float _shownAt = -1f;
+
+        /// <summary>
+        /// Seconds the overlay waits for the web page's loading card before showing anyway (the page
+        /// normally hides it within half a second of the game starting).
+        /// </summary>
+        const float LoaderTimeout = 6f;
 
         void Awake()
         {
@@ -50,11 +62,15 @@ namespace Ion.Presentation
         void Update()
         {
             bool locked = Cursor.lockState == CursorLockMode.Locked;
-            _wantVisible = !locked;
+            bool endCard = EndCard.IsOpen; // the end card owns the free cursor
+            // On the web, wait until the page's loading card (with its own title + controls) is gone,
+            // so the two never cross-fade into a double exposure.
+            bool loader = !_hasPlayed && Time.realtimeSinceStartup < LoaderTimeout && Ion.Web.WebLinks.LoaderVisible;
+            _wantVisible = !locked && !endCard && !loader;
             if (locked) _hasPlayed = true;
 
             // Click anywhere to (re)lock the cursor.
-            if (!locked)
+            if (!locked && !endCard)
             {
                 var mouse = Mouse.current;
                 if (mouse != null && mouse.leftButton.wasPressedThisFrame)
@@ -66,7 +82,7 @@ namespace Ion.Presentation
 
             float dt = Time.unscaledDeltaTime;
             float target = _wantVisible ? 1f : 0f;
-            _group.alpha = Mathf.MoveTowards(_group.alpha, target, dt * 6f);
+            _group.alpha = Mathf.MoveTowards(_group.alpha, target, dt * (loader ? 100f : 6f));
             _group.blocksRaycasts = _wantVisible;
 
             bool active = _group.alpha > 0.001f;
@@ -75,12 +91,25 @@ namespace Ion.Presentation
 
             if (active)
             {
+                if (_shownAt < 0f) _shownAt = Time.unscaledTime;
                 string label = _hasPlayed ? "Click to resume" : "Click to play";
-                if (_cta.text != label) _cta.text = label;
-                float pulse = 0.7f + 0.3f * Mathf.Sin(Time.unscaledTime * 3.2f);
-                var c = _cta.color;
-                c.a = pulse;
-                _cta.color = c;
+                if (_cta.text != label)
+                {
+                    _cta.text = label;
+                    _ctaButton.sizeDelta = new Vector2(_cta.preferredWidth + 88f, 72f);
+                }
+                // A solid button that breathes gently (never fades out).
+                float pulse = 1f + 0.025f * Mathf.Sin((Time.unscaledTime - _shownAt) * 3.2f);
+                _ctaButton.localScale = new Vector3(pulse, pulse, 1f);
+
+                // Fit the card on short / narrow screens.
+                Rect r = ((RectTransform)transform).rect;
+                float fit = Mathf.Min(1f, (r.height - 40f) / CardH, (r.width - 40f) / CardW);
+                if (fit > 0f) _card.localScale = new Vector3(fit, fit, 1f);
+            }
+            else
+            {
+                _shownAt = -1f;
             }
         }
 
@@ -89,7 +118,7 @@ namespace Ion.Presentation
             var root = (RectTransform)transform;
             _group = gameObject.AddComponent<CanvasGroup>();
             _group.interactable = false;
-            _group.alpha = 1f;
+            _group.alpha = Ion.Web.WebLinks.LoaderVisible ? 0f : 1f;
 
             // Dim panel (first child = content toggled by Update).
             var dim = UIUtil.NewImage("Dim", root, UIUtil.WithAlpha(Palette.Ink, 0.74f));
@@ -97,31 +126,39 @@ namespace Ion.Presentation
             dim.raycastTarget = true;
 
             var card = UIUtil.NewRect("Card", dim.rectTransform);
-            UIUtil.Anchor(card, new Vector2(0.5f, 0.5f), new Vector2(0.5f, 0.5f), Vector2.zero, new Vector2(760f, 760f));
+            UIUtil.Anchor(card, new Vector2(0.5f, 0.5f), new Vector2(0.5f, 0.5f), Vector2.zero, new Vector2(CardW, CardH));
+            _card = card;
 
-            var title = UIUtil.NewText("Title", card, "|project|ion", 84, Palette.Cream, TextAnchor.MiddleCenter, FontStyle.Bold);
-            UIUtil.Anchor(title.rectTransform, new Vector2(0.5f, 1f), new Vector2(0.5f, 1f), new Vector2(0f, 0f), new Vector2(760f, 100f));
+            // Wordmark: heavy rounded sans like the page's loader, thin pipes.
+            var title = UIUtil.NewText("Title", card, "<color=#FFF4E073>|</color>project<color=#FFF4E073>|</color>ion", 92, Palette.Cream, TextAnchor.MiddleCenter, FontStyle.Bold);
+            UIUtil.Anchor(title.rectTransform, new Vector2(0.5f, 1f), new Vector2(0.5f, 1f), new Vector2(0f, 0f), new Vector2(CardW, 110f));
 
-            var sub = UIUtil.NewText("Subtitle", card, "a little photo-projection puzzle", 24, Palette.Sky, TextAnchor.MiddleCenter, FontStyle.Italic);
-            UIUtil.Anchor(sub.rectTransform, new Vector2(0.5f, 1f), new Vector2(0.5f, 1f), new Vector2(0f, -96f), new Vector2(760f, 36f));
+            var sub = UIUtil.NewText("Subtitle", card, "a little photo-projection puzzle", 26, Palette.Sky, TextAnchor.MiddleCenter, FontStyle.Normal);
+            UIUtil.Anchor(sub.rectTransform, new Vector2(0.5f, 1f), new Vector2(0.5f, 1f), new Vector2(0f, -100f), new Vector2(CardW, 36f));
 
-            _cta = UIUtil.NewText("CallToAction", card, "Click to play", 40, Palette.Butter, TextAnchor.MiddleCenter, FontStyle.Bold);
-            UIUtil.Anchor(_cta.rectTransform, new Vector2(0.5f, 1f), new Vector2(0.5f, 1f), new Vector2(0f, -170f), new Vector2(760f, 56f));
+            // Call to action: a solid cream button with dark text.
+            _ctaBg = UIUtil.NewImage("CallToAction", card, Palette.Cream, UIUtil.RoundedSprite, true);
+            _ctaButton = _ctaBg.rectTransform;
+            UIUtil.Anchor(_ctaButton, new Vector2(0.5f, 1f), new Vector2(0.5f, 0.5f), new Vector2(0f, -196f), new Vector2(320f, 72f));
+            _ctaBg.pixelsPerUnitMultiplier = 0.6f;
+            _cta = UIUtil.NewText("Label", _ctaButton, "Click to play", 34, Palette.Ink, TextAnchor.MiddleCenter, FontStyle.Bold, false);
+            UIUtil.Stretch(_cta.rectTransform);
+            _ctaButton.sizeDelta = new Vector2(_cta.preferredWidth + 88f, 72f);
 
             // Divider.
             var div = UIUtil.NewImage("Divider", card, UIUtil.WithAlpha(Palette.Cream, 0.25f));
-            UIUtil.Anchor(div.rectTransform, new Vector2(0.5f, 1f), new Vector2(0.5f, 1f), new Vector2(0f, -248f), new Vector2(420f, 2f));
+            UIUtil.Anchor(div.rectTransform, new Vector2(0.5f, 1f), new Vector2(0.5f, 1f), new Vector2(0f, -266f), new Vector2(420f, 2f));
 
             // Controls list: keys right-aligned on the left, actions left-aligned on the right.
-            const float rowH = 36f;
-            float y = -276f;
+            const float rowH = 38f;
+            float y = -290f;
             int rows = Controls.GetLength(0);
             for (int i = 0; i < rows; i++)
             {
-                var key = UIUtil.NewText("Key" + i, card, Controls[i, 0], 22, Palette.Coral, TextAnchor.MiddleRight, FontStyle.Bold);
+                var key = UIUtil.NewText("Key" + i, card, Controls[i, 0], 23, Palette.Butter, TextAnchor.MiddleRight, FontStyle.Bold);
                 UIUtil.Anchor(key.rectTransform, new Vector2(0.5f, 1f), new Vector2(1f, 1f), new Vector2(-16f, y), new Vector2(320f, rowH));
 
-                var act = UIUtil.NewText("Action" + i, card, Controls[i, 1], 22, Palette.Cream, TextAnchor.MiddleLeft);
+                var act = UIUtil.NewText("Action" + i, card, Controls[i, 1], 23, Palette.Cream, TextAnchor.MiddleLeft);
                 UIUtil.Anchor(act.rectTransform, new Vector2(0.5f, 1f), new Vector2(0f, 1f), new Vector2(16f, y), new Vector2(320f, rowH));
                 y -= rowH;
             }

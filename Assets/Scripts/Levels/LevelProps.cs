@@ -31,6 +31,92 @@ namespace Ion.Levels
     }
 
     /// <summary>
+    /// Teleporter shimmer: thin glowing rings that rise from the pad and shrink away, and a handful of
+    /// motes spiralling up. Plain transforms on shared emissive materials (SRP-batched, no particles
+    /// system, no shadows); animated only while the player is within <see cref="ActiveRange"/>.
+    /// </summary>
+    public sealed class TeleporterFx : MonoBehaviour
+    {
+        const int RingCount = 3, MoteCount = 12;
+        const float Height = 2.5f, ActiveRange = 45f;
+
+        static Mesh s_Ring;
+
+        readonly Transform[] _rings = new Transform[RingCount];
+        readonly Transform[] _motes = new Transform[MoteCount];
+        readonly float[] _seeds = new float[MoteCount];
+
+        void Awake()
+        {
+            if (s_Ring == null) s_Ring = PhotoPickup.BuildRing(0.78f, 0.86f, 32);
+            Material ringMat = Palette.GetEmissive(Palette.Teal, 1.1f);
+            Material moteA = Palette.GetEmissive(Palette.Cream, 1.2f);
+            Material moteB = Palette.GetEmissive(Palette.Teal, 1.2f);
+            // A clone (a photo of the teleporter pasted elsewhere) already carries the pieces: reuse them.
+            int rings = 0, motes = 0;
+            foreach (Transform child in transform)
+            {
+                if (child.name == "ShimmerRing" && rings < RingCount) _rings[rings++] = child;
+                else if (child.name == "Mote" && motes < MoteCount) _motes[motes++] = child;
+            }
+            for (int i = rings; i < RingCount; i++)
+            {
+                var go = Geo.Visual("ShimmerRing", transform, s_Ring, new Vector3(0f, 0.3f, 0f), Quaternion.identity, Vector3.one, Palette.Teal);
+                Setup(go, ringMat);
+                _rings[i] = go.transform;
+            }
+            for (int i = motes; i < MoteCount; i++)
+            {
+                var go = Geo.Visual("Mote", transform, Geo.CubeMesh, Vector3.zero, Quaternion.identity, Vector3.one * 0.06f, Palette.Cream);
+                Setup(go, (i & 1) == 0 ? moteA : moteB);
+                _motes[i] = go.transform;
+            }
+            var rng = new System.Random(GetInstanceID());
+            for (int i = 0; i < MoteCount; i++) _seeds[i] = (float)rng.NextDouble();
+            Animate(0f);
+        }
+
+        static void Setup(GameObject go, Material m)
+        {
+            var r = go.GetComponent<MeshRenderer>();
+            r.sharedMaterial = m;
+            r.shadowCastingMode = UnityEngine.Rendering.ShadowCastingMode.Off;
+            r.receiveShadows = false;
+        }
+
+        void Update()
+        {
+            var player = FirstPersonController.Current;
+            if (player != null && (player.transform.position - transform.position).sqrMagnitude > ActiveRange * ActiveRange) return;
+            Animate(Time.time);
+        }
+
+        void Animate(float time)
+        {
+            for (int i = 0; i < RingCount; i++)
+            {
+                float p = Mathf.Repeat(time * 0.42f + i / (float)RingCount, 1f);
+                float fade = Mathf.Clamp01(p / 0.12f) * Mathf.Clamp01((1f - p) / 0.25f);
+                float s = Mathf.Lerp(1.02f, 0.6f, p) * Mathf.Lerp(0.85f, 1f, fade);
+                _rings[i].localPosition = new Vector3(0f, 0.25f + p * Height, 0f);
+                _rings[i].localScale = new Vector3(s * fade, 1f, s * fade);
+                _rings[i].localRotation = Quaternion.Euler(0f, time * 30f + i * 40f, 0f);
+            }
+            for (int i = 0; i < MoteCount; i++)
+            {
+                float seed = _seeds[i];
+                float p = Mathf.Repeat(time * (0.28f + seed * 0.2f) + seed, 1f);
+                float a = seed * 6.283f + time * (1.2f + seed);
+                float r = 0.55f + 0.2f * Mathf.Sin(seed * 9f + p * 3f);
+                _motes[i].localPosition = new Vector3(Mathf.Cos(a) * r, 0.2f + p * (Height + 0.4f), Mathf.Sin(a) * r);
+                float size = 0.07f * Mathf.Sin(p * Mathf.PI);
+                _motes[i].localScale = new Vector3(size, size, size);
+                _motes[i].localRotation = Quaternion.Euler(a * 40f, a * 57f, 0f);
+            }
+        }
+    }
+
+    /// <summary>
     /// Toasts <see cref="Text"/> when the player's feet enter a horizontal radius around this object
     /// (and are within 2.5 m vertically). Fires again only after the player has left.
     /// Uses a distance poll, so it needs no collider and survives being cut by a photo.
@@ -45,13 +131,21 @@ namespace Ion.Levels
         bool _inside;
         bool _fired;
 
+        /// <summary>Re-arms a one-shot hint (game restart).</summary>
+        public void ResetZone()
+        {
+            _fired = false;
+            _inside = false;
+        }
+
         void Update()
         {
             var player = FirstPersonController.Current;
             if (player == null) return;
             Vector3 d = player.transform.position - transform.position;
             bool inside = d.y > -1f && d.y < 2.5f && (d.x * d.x + d.z * d.z) <= Radius * Radius;
-            if (inside && !_inside && !(Once && _fired))
+            // While the room 1 tutorial runs, its line is the only instruction on screen.
+            if (inside && !_inside && !(Once && _fired) && !Onboarding.IsGuiding)
             {
                 _fired = true;
                 RoomContext.Toast(Text, Seconds);
@@ -68,6 +162,14 @@ namespace Ion.Levels
         public GameObject Visual;
 
         bool _taken;
+
+        /// <summary>Puts the camera back on its pedestal (game restart).</summary>
+        public void ResetPickup()
+        {
+            _taken = false;
+            enabled = true;
+            if (Visual != null) Visual.SetActive(true);
+        }
 
         void Update()
         {
@@ -88,16 +190,8 @@ namespace Ion.Levels
     /// <summary>World-space legacy uGUI text (renders fine in URP, no TMP assets needed).</summary>
     public static class WorldText
     {
-        static Font s_Font;
-
-        public static Font Font
-        {
-            get
-            {
-                if (s_Font == null) s_Font = Resources.GetBuiltinResource<Font>("LegacyRuntime.ttf");
-                return s_Font;
-            }
-        }
+        /// <summary>Same heavy face as the HUD (Nunito ExtraBold, LegacyRuntime fallback).</summary>
+        public static Font Font => Ion.Presentation.UIUtil.BoldFont;
 
         /// <summary>
         /// Creates a text label. The text reads correctly when viewed looking along the label's +Z
@@ -126,10 +220,9 @@ namespace Ion.Levels
             lrt.offsetMin = Vector2.zero;
             lrt.offsetMax = Vector2.zero;
             var t = labelGo.AddComponent<Text>();
-            t.font = Font;
+            Ion.Presentation.UIUtil.SetFontStyle(t, FontStyle.Bold);
             t.text = text;
             t.fontSize = fontSize;
-            t.fontStyle = FontStyle.Bold;
             t.alignment = TextAnchor.MiddleCenter;
             t.horizontalOverflow = HorizontalWrapMode.Wrap;
             t.verticalOverflow = VerticalWrapMode.Overflow;

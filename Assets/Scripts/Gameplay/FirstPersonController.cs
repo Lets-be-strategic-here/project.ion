@@ -40,11 +40,31 @@ namespace Ion.Gameplay
             }
         }
 
+        public const string HeadBobPrefKey = "ion.headBob";
+        static int s_HeadBob = -1;
+
+        /// <summary>Subtle walking head bob and landing dip (on by default). Persisted in PlayerPrefs.</summary>
+        public static bool HeadBobEnabled
+        {
+            get
+            {
+                if (s_HeadBob < 0) s_HeadBob = PlayerPrefs.GetInt(HeadBobPrefKey, 1) != 0 ? 1 : 0;
+                return s_HeadBob == 1;
+            }
+            set
+            {
+                s_HeadBob = value ? 1 : 0;
+                PlayerPrefs.SetInt(HeadBobPrefKey, s_HeadBob);
+                PlayerPrefs.Save();
+            }
+        }
+
         [RuntimeInitializeOnLoadMethod(RuntimeInitializeLoadType.SubsystemRegistration)]
         static void ResetStatics()
         {
             Current = null;
             s_Sensitivity = -1f;
+            s_HeadBob = -1;
         }
 
         [Header("Movement")]
@@ -64,6 +84,12 @@ namespace Ion.Gameplay
         [Header("Safety")]
         public float KillY = -40f;
 
+        [Header("Feel")]
+        /// <summary>Vertical bob amplitude (m) at walking speed; sideways sway is about half.</summary>
+        public float BobHeight = 0.022f;
+        /// <summary>Metres walked per full bob cycle (two footsteps).</summary>
+        public float BobStride = 2.3f;
+
         Camera _camera;
         CharacterController _cc;
         bool _inputEnabled = true;
@@ -81,6 +107,15 @@ namespace Ion.Gameplay
         float _checkpointYaw;
         float _nextCheckpointScan;
 
+        // View feel: head bob, landing dip and an FOV punch (camera-local; never moves the body).
+        Vector3 _eyeLocal = new Vector3(0f, 1.62f, 0f);
+        float _baseFov = 70f;
+        float _bobPhase, _bobAmount;
+        float _dip, _dipVelocity;
+        float _fovKick, _fovKickVelocity;
+        bool _wasGrounded = true;
+        float _fallSpeed;
+
         // Automation (debug harness / tests): movement input injected instead of the keyboard.
         Vector2 _scriptedInput;
         float _scriptedUntil = -1f;
@@ -90,6 +125,14 @@ namespace Ion.Gameplay
 
         public Camera Camera => _camera;
 
+        /// <summary>Field of view without the transient FOV punch.</summary>
+        public float BaseFieldOfView => _baseFov;
+
+        /// <summary>Current camera offset from head bob + landing dip (camera-local metres).</summary>
+        public Vector3 ViewBobOffset { get; private set; }
+
+        /// <summary>Normalised walking bob (x = sideways, y = vertical, each -1..1, scaled by how much it is active).</summary>
+        public Vector2 BobSignal { get; private set; }
         /// <summary>When false, movement/look/actions are ignored (gravity still applies).</summary>
         public bool InputEnabled
         {
@@ -160,6 +203,7 @@ namespace Ion.Gameplay
         {
             _cc = GetComponent<CharacterController>();
             if (_camera == null) _camera = GetComponentInChildren<Camera>(true);
+            CaptureCameraBase();
             _yaw = transform.eulerAngles.y;
             _pitch = 0f;
             _checkpointPosition = transform.position;
@@ -178,7 +222,76 @@ namespace Ion.Gameplay
         internal void AttachCamera(Camera cam)
         {
             _camera = cam;
+            CaptureCameraBase();
             ApplyRotation();
+        }
+
+        void CaptureCameraBase()
+        {
+            if (_camera == null) return;
+            _eyeLocal = _camera.transform.localPosition;
+            _baseFov = _camera.fieldOfView;
+        }
+
+        /// <summary>A short field-of-view punch (degrees, positive = wider) that springs back.</summary>
+        public void PunchFov(float degrees)
+        {
+            _fovKickVelocity += degrees * 18f;
+        }
+
+        /// <summary>
+        /// Puts the camera back at its exact eye position and base FOV right now (no bob, dip or punch).
+        /// Called before anything uses the camera pose for gameplay (placing, capturing).
+        /// </summary>
+        public void ResetViewEffects()
+        {
+            _bobAmount = 0f;
+            _dip = _dipVelocity = 0f;
+            _fovKick = _fovKickVelocity = 0f;
+            ApplyViewEffects();
+        }
+
+        void UpdateViewEffects(float dt)
+        {
+            if (dt <= 0f) return;
+            bool on = HeadBobEnabled;
+            bool grounded = _cc != null && _cc.isGrounded;
+
+            // Bob: phase follows the distance walked; amplitude follows speed (and fades in the air).
+            Vector3 hv = _horizontalVelocity;
+            hv.y = 0f;
+            float speed = hv.magnitude;
+            float target = on && grounded ? Mathf.Clamp01(speed / WalkSpeed) : 0f;
+            _bobAmount = Mathf.MoveTowards(_bobAmount, target, dt * (target > _bobAmount ? 4f : 6f));
+            _bobPhase = Mathf.Repeat(_bobPhase + speed * dt * (2f * Mathf.PI / Mathf.Max(0.5f, BobStride)), 2f * Mathf.PI);
+            if (_bobAmount < 1e-3f) _bobPhase = Mathf.MoveTowards(_bobPhase, _bobPhase < Mathf.PI ? 0f : 2f * Mathf.PI, dt * 6f);
+
+            // Landing dip: a damped spring kicked by the landing speed.
+            if (grounded && !_wasGrounded && on && _fallSpeed > 3f)
+                _dipVelocity += Mathf.Min((_fallSpeed - 2f) * 0.05f, 0.65f);
+            _wasGrounded = grounded;
+            const float k = 140f, c = 17f;
+            _dipVelocity += (-k * _dip - c * _dipVelocity) * dt;
+            _dip = Mathf.Clamp(_dip + _dipVelocity * dt, -0.05f, 0.12f);
+
+            // FOV punch spring.
+            const float fk = 220f, fc = 24f;
+            _fovKickVelocity += (-fk * _fovKick - fc * _fovKickVelocity) * dt;
+            _fovKick = Mathf.Clamp(_fovKick + _fovKickVelocity * dt, -6f, 6f);
+
+            ApplyViewEffects();
+        }
+
+        void ApplyViewEffects()
+        {
+            float sx = Mathf.Sin(_bobPhase), sy = Mathf.Sin(_bobPhase * 2f);
+            BobSignal = new Vector2(sx, sy) * _bobAmount;
+            var offset = new Vector3(sx * BobHeight * 0.55f * _bobAmount, sy * BobHeight * _bobAmount - _dip, 0f);
+            ViewBobOffset = offset;
+            if (_camera == null) return;
+            _camera.transform.localPosition = _eyeLocal + offset;
+            float fov = _baseFov + _fovKick;
+            if (!Mathf.Approximately(_camera.fieldOfView, fov)) _camera.fieldOfView = fov;
         }
 
         void Update()
@@ -189,11 +302,31 @@ namespace Ion.Gameplay
             HandleCursor(kb, mouse);
             HandleLook(mouse);
             HandleMove(kb);
+            UpdateViewEffects(Time.deltaTime);
             HandleCheckpoints();
 
-            if (transform.position.y < KillY)
+            // Falling out of the world: fade to white on the way down and respawn at the peak (hard
+            // fallback at KillY in case the fade cannot run).
+            float y = transform.position.y;
+            if (y < KillY)
+            {
                 Respawn();
+            }
+            else if (y < KillY + RespawnFadeLead && _fadeRespawnToken == 0 && _verticalVelocity < 0f)
+            {
+                int token = ++_respawnSerial;
+                _fadeRespawnToken = token;
+                Ion.Presentation.ScreenFx.RunTransition(() =>
+                {
+                    if (this == null || _fadeRespawnToken != token) return;
+                    Respawn();
+                });
+            }
         }
+
+        /// <summary>Metres above <see cref="KillY"/> at which the respawn fade starts.</summary>
+        const float RespawnFadeLead = 38f;
+        int _fadeRespawnToken, _respawnSerial;
 
         void HandleCursor(Keyboard kb, Mouse mouse)
         {
@@ -302,6 +435,7 @@ namespace Ion.Gameplay
             }
 
             _verticalVelocity = Mathf.Max(_verticalVelocity - Gravity * dt, -MaxFallSpeed);
+            if (!grounded) _fallSpeed = Mathf.Max(0f, -_verticalVelocity);
 
             float accel = grounded ? GroundAcceleration : AirAcceleration;
             _horizontalVelocity = Vector3.MoveTowards(_horizontalVelocity, wish, accel * dt);
@@ -364,6 +498,7 @@ namespace Ion.Gameplay
         /// <summary>Instantly moves the player (feet position) and sets the view yaw; resets velocity and pitch.</summary>
         public void Teleport(Vector3 position, float yaw)
         {
+            _fadeRespawnToken = 0; // a pending fall-respawn fade no longer applies
             // A CharacterController overrides transform writes while enabled.
             if (_cc != null) _cc.enabled = false;
             transform.position = position;
@@ -374,6 +509,9 @@ namespace Ion.Gameplay
             _verticalVelocity = 0f;
             StopScriptedWalk();
             if (_cc != null) _cc.enabled = true;
+            _wasGrounded = true;
+            _fallSpeed = 0f;
+            ResetViewEffects();
         }
     }
 }

@@ -368,6 +368,50 @@ namespace Ion.EditorTools
             TrySetStatic(webType, "geometricMemoryGrowthCap", 96);
 
             EditorUserBuildSettings.webGLBuildSubtarget = WebGLTextureSubtarget.DXT;
+            SetWebCodeOptimization(WebCodeOptimization);
+        }
+
+        /// <summary>
+        /// Web "Code Optimization" (Build Profiles → Web): smallest wasm with link-time optimisation. Slower
+        /// to build, noticeably smaller download. Stored in the build settings (Library), so every build
+        /// re-applies it (WebBuild calls this too) and fresh CI checkouts get it as well.
+        /// </summary>
+        public const string WebCodeOptimization = "DiskSizeLTO";
+
+        public static void SetWebCodeOptimization(string value)
+        {
+            bool done = false;
+            foreach (Assembly asm in AppDomain.CurrentDomain.GetAssemblies())
+            {
+                string name = asm.GetName().Name;
+                if (!name.StartsWith("UnityEditor.WebGL", StringComparison.Ordinal)) continue;
+                Type[] types;
+                try { types = asm.GetTypes(); }
+                catch (ReflectionTypeLoadException e) { types = e.Types; }
+                foreach (Type t in types)
+                {
+                    if (t == null) continue;
+                    PropertyInfo prop = t.GetProperty("codeOptimization", BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Static);
+                    if (prop == null || !prop.CanWrite || !prop.PropertyType.IsEnum) continue;
+                    if (!Enum.IsDefined(prop.PropertyType, value)) continue;
+                    try
+                    {
+                        prop.SetValue(null, Enum.Parse(prop.PropertyType, value));
+                        Debug.Log($"[Ion] Web code optimization: {t.FullName}.codeOptimization = {prop.GetValue(null)}");
+                        done = true;
+                    }
+                    catch (Exception e)
+                    {
+                        Debug.LogWarning($"[Ion] Could not set {t.FullName}.codeOptimization: {e.Message}");
+                    }
+                }
+            }
+            if (!done)
+            {
+                EditorUserBuildSettings.SetPlatformSettings("WebGL", "CodeOptimization", value);
+                Debug.Log("[Ion] Web code optimization (platform setting) = " +
+                          EditorUserBuildSettings.GetPlatformSettings("WebGL", "CodeOptimization"));
+            }
         }
 
         // ------------------------------------------------------------------ input handling

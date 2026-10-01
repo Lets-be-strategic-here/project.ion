@@ -54,6 +54,29 @@ namespace Ion.Gameplay
             }
         }
 
+        static bool Quiet => Ion.Levels.GameBootstrap.Restarting;
+
+        /// <summary>A rewound photo flies from the middle of the screen back into the inventory strip.</summary>
+        public static void PhotoReturned(Ion.Projection.PhotoData photo)
+        {
+            var hud = Hud;
+            if (hud != null && !Quiet) hud.FlyInFromCenter(photo);
+        }
+
+        /// <summary>A collected photo pops from its spot in the world into the inventory strip.</summary>
+        public static void PhotoCollected(Ion.Projection.PhotoData photo, Vector3 worldPosition)
+        {
+            var hud = Hud;
+            if (hud != null && !Quiet) hud.FlyInFromWorld(photo, worldPosition);
+        }
+
+        /// <summary>A fresh instant-camera print slides out from the bottom, then joins the inventory strip.</summary>
+        public static void PhotoPrinted(Ion.Projection.PhotoData photo)
+        {
+            var hud = Hud;
+            if (hud != null && !Quiet) hud.PrintOut(photo);
+        }
+
         public static void Toast(string text)
         {
             var hud = Hud;

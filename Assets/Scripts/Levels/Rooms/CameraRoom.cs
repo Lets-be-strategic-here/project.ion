@@ -13,8 +13,8 @@ namespace Ion.Levels
     /// the snapshot: the terrace face lands on the cliff face, both 3 m tall, so the pasted terrace merges
     /// with the real ledge and the ramp channel becomes the way up. Standing elsewhere still works (the
     /// whole view cone is replaced consistently), it just shifts the ramp.
-    /// Both shots look along ±Z, away from the neighbouring rooms laid out on X. The instant camera
-    /// uses the player's 70° FOV (≈43° horizontal half-angle), so the teleporter sits ~54° off the cliff
+    /// Both shots look along ±Z, away from the neighbouring rooms laid out on X. Snapshots use the photo
+    /// shape (50° vertical, 4:3, ≈32° horizontal half-angle), so the teleporter sits ~54° off the cliff
     /// marker's view axis and a paste from the marker never removes it.
     /// </summary>
     public sealed class CameraRoom : Room
@@ -55,7 +55,8 @@ namespace Ion.Levels
             ctx.SetSpawn(new Vector3(0f, 0f, 0f));
             ctx.AddCheckpoint(new Vector3(0f, CliffTop, 24f));
 
-            ctx.CreateCameraPickup(new Vector3(-3.5f, 0f, 3f), 3);
+            // In view from the spawn (about 28° left of straight ahead).
+            ctx.CreateCameraPickup(new Vector3(-2.4f, 0f, 4.5f), 3);
             ctx.CreateMarker(new Vector3(0f, 0f, -11f), 180f, LevelColors.MarkerCamera,
                 "Snap the ramp from here:  C for the camera, hold RMB, LMB to shoot");
             ctx.CreateMarker(new Vector3(0f, 0f, 8f), LevelColors.MarkerPhoto,
@@ -64,7 +65,7 @@ namespace Ion.Levels
             ctx.CreateTeleporter(new Vector3(10.5f, CliffTop, 15.5f));
 
             // Beside the camera pedestal (the pickup unlocks within 1.2 m).
-            AddSolution("pickup", RoomSolution.Kind.Goal, new Vector3(-2.5f, 0f, 3f));
+            AddSolution("pickup", RoomSolution.Kind.Goal, new Vector3(-1.4f, 0f, 4.5f));
             AddSolution("snap", RoomSolution.Kind.Snap, new Vector3(0f, 0f, -11f), 180f);
             AddSolution("place", RoomSolution.Kind.Place, new Vector3(0f, 0f, 8f), 0f, 0f, -1);
             AddSolution("far", RoomSolution.Kind.Goal, new Vector3(0f, CliffTop, 22f));

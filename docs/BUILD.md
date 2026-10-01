@@ -52,8 +52,17 @@ are written to `Build/test-results.xml`.
 
 Settings that matter for the web build: Compression *Disabled* (GitHub Pages gzips on the fly),
 Data Caching on, Exceptions *None*, Strip Engine Code, Managed Stripping *High* (with
-`Assets/Plugins/WebGL/link.xml` preserving `Ion.Runtime`), IL2CPP *Optimize for size*, DXT
+`Assets/Plugins/WebGL/link.xml` preserving `Ion.Runtime`), IL2CPP *Optimize for size*, Code
+Optimization *Disk Size with LTO* (`UnityEditor.WebGL.UserBuildSettings.codeOptimization`, re-applied
+by every `WebBuild` run because it lives in `Library/`; LTO makes the link step slower), DXT
 textures, WebGL2 only, and the custom template `PROJECT:Ion` (`Assets/WebGLTemplates/Ion`).
+
+### Debug harness (`?debug=1`)
+
+`Ion.DebugTools.IonDebug` (teleport, give all photos, place / rewind / snap from the browser console via
+`window.ionUnity.SendMessage('IonDebug', ...)`) always runs in the Editor and in PlayMode tests. In a
+Web player it only installs when the page URL has `?debug=1`, e.g. `http://localhost:8080/?debug=1`.
+Automation scripts must append it.
 
 ## 4. Serve locally
 

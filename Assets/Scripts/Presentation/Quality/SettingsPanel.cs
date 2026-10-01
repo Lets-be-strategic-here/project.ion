@@ -11,7 +11,8 @@ namespace Ion.Presentation.Quality
     /// <summary>
     /// Self-installing settings overlay (own Screen Space Overlay canvas, sort order 50, above the HUD,
     /// the viewfinder and the click-to-play overlay). The bottom-right card is shown while the cursor is
-    /// unlocked: Quality (Auto / Low / Med / High), mouse sensitivity and an FPS readout toggle.
+    /// unlocked: Quality (Auto / Low / Med / High), mouse sensitivity, an FPS readout toggle and a head-bob
+    /// toggle (walking bob + landing dip; on by default).
     /// F3 toggles the small top-right FPS readout at any time (persisted in "ion.showFps").
     ///
     /// Why the card does its own hit-testing instead of using uGUI Button/Slider:
@@ -35,6 +36,7 @@ namespace Ion.Presentation.Quality
         const float FpsRefreshSeconds = 0.5f;
         const float StatusRefreshSeconds = 0.25f;
         const int FpsButton = 4; // index in _buttons after the four tier buttons
+        const int HeadBobButton = 5;
 
         static readonly int[] TierButtonValues = { QualityTier.Auto, QualityTier.Low, QualityTier.Medium, QualityTier.High };
 
@@ -48,10 +50,10 @@ namespace Ion.Presentation.Quality
         CanvasGroup _group;
         bool _wantVisible;
 
-        readonly RectTransform[] _buttons = new RectTransform[5];
-        readonly Image[] _buttonBg = new Image[5];
-        readonly Color[] _buttonColor = new Color[5];
-        readonly Text[] _buttonText = new Text[5];
+        readonly RectTransform[] _buttons = new RectTransform[6];
+        readonly Image[] _buttonBg = new Image[6];
+        readonly Color[] _buttonColor = new Color[6];
+        readonly Text[] _buttonText = new Text[6];
         int _hovered = -1;
         int _shownPref = int.MinValue;
 
@@ -78,6 +80,7 @@ namespace Ion.Presentation.Quality
         readonly StringBuilder _sb = new StringBuilder(48);
 
         bool _wasUnlocked;
+        bool _hasPlayed; // the card appears only after the player has been in the game (Esc), not on first load
 
         [RuntimeInitializeOnLoadMethod(RuntimeInitializeLoadType.SubsystemRegistration)]
         static void ResetStatics() => Instance = null;
@@ -96,11 +99,7 @@ namespace Ion.Presentation.Quality
             canvas.pixelPerfect = false;
 
             // Same scaler as UIFactory so units match the HUD.
-            var scaler = go.AddComponent<CanvasScaler>();
-            scaler.uiScaleMode = CanvasScaler.ScaleMode.ScaleWithScreenSize;
-            scaler.referenceResolution = new Vector2(1920f, 1080f);
-            scaler.screenMatchMode = CanvasScaler.ScreenMatchMode.MatchWidthOrHeight;
-            scaler.matchWidthOrHeight = 0.5f;
+            IonCanvasScaler.AddTo(go); // 1920x1080, match 0.5, with a minimum scale
 
             // Lets EventSystem.IsPointerOverGameObject() see the card (for integration guards).
             go.AddComponent<GraphicRaycaster>();
@@ -139,11 +138,13 @@ namespace Ion.Presentation.Quality
 
             _showFps = PlayerPrefs.GetInt(ShowFpsPrefKey, 0) == 1;
             ApplyShowFps();
+            ApplyHeadBobLabel();
             RefreshTierButtons(true);
             SyncSensitivityFromController();
 
             _wasUnlocked = Cursor.lockState != CursorLockMode.Locked;
-            _wantVisible = _wasUnlocked;
+            _hasPlayed = !_wasUnlocked;
+            _wantVisible = _wasUnlocked && _hasPlayed;
             _group.alpha = _wantVisible ? 1f : 0f;
             _cardContent.SetActive(_wantVisible);
         }
@@ -164,8 +165,11 @@ namespace Ion.Presentation.Quality
             HandlePointer(mouse);
 
             bool unlocked = Cursor.lockState != CursorLockMode.Locked;
-            if (unlocked && !_wantVisible) SyncSensitivityFromController();
-            _wantVisible = unlocked;
+            if (!unlocked) _hasPlayed = true;
+            // Shown after Esc (not over the first-load title card) and never over the end card.
+            bool want = unlocked && _hasPlayed && !EndCard.IsOpen;
+            if (want && !_wantVisible) SyncSensitivityFromController();
+            _wantVisible = want;
 
             // Fade.
             float target = _wantVisible ? 1f : 0f;
@@ -218,6 +222,7 @@ namespace Ion.Presentation.Quality
                 {
                     if (!Contains(_buttons[i], pos)) continue;
                     if (i == FpsButton) SetShowFps(!_showFps);
+                    else if (i == HeadBobButton) ToggleHeadBob();
                     else OnTierClicked(i);
                     break;
                 }
@@ -300,9 +305,22 @@ namespace Ion.Presentation.Quality
             ApplyShowFps();
         }
 
+        void ToggleHeadBob()
+        {
+            FirstPersonController.HeadBobEnabled = !FirstPersonController.HeadBobEnabled;
+            ApplyHeadBobLabel();
+        }
+
+        void ApplyHeadBobLabel()
+        {
+            _buttonText[HeadBobButton].text = FirstPersonController.HeadBobEnabled ? "Head bob:  On" : "Head bob:  Off";
+        }
+
         void ApplyShowFps()
         {
             _fpsRoot.SetActive(_showFps);
+            // The tier / render-scale readout is diagnostics: only with the FPS counter on.
+            if (_status != null) _status.gameObject.SetActive(_showFps);
             _buttonText[FpsButton].text = _showFps ? "FPS counter (F3):  On" : "FPS counter (F3):  Off";
             _fpsTimer = 0f;
             _fpsAccum = 0f;
@@ -436,7 +454,7 @@ namespace Ion.Presentation.Quality
             UIUtil.Stretch(_fpsText.rectTransform);
 
             // Settings card: bottom-right, clear of the centred click-to-play card.
-            const float w = 400f, h = 292f, pad = 20f;
+            const float w = 400f, h = 344f, pad = 20f;
             _card = UIUtil.NewRect("Settings", root);
             UIUtil.Anchor(_card, new Vector2(1f, 0f), new Vector2(1f, 0f), new Vector2(-28f, 28f), new Vector2(w, h));
             _group = _card.gameObject.AddComponent<CanvasGroup>();
@@ -472,6 +490,9 @@ namespace Ion.Presentation.Quality
 
             MakeButton(FpsButton, c, "", pad, -226f, inner, 44f);
             SetButtonColor(FpsButton, UIUtil.WithAlpha(Palette.Slate, 0.95f), Palette.Cream);
+
+            MakeButton(HeadBobButton, c, "", pad, -278f, inner, 44f);
+            SetButtonColor(HeadBobButton, UIUtil.WithAlpha(Palette.Slate, 0.95f), Palette.Cream);
         }
 
         static void TopLeft(RectTransform rt, float x, float y, float width, float height)

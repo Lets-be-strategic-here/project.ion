@@ -71,6 +71,8 @@ namespace Ion.EditorTools
                 }
             }
 
+            ProjectSetup.SetWebCodeOptimization(ProjectSetup.WebCodeOptimization);
+
             string output = GetArg("-ionOutput") ?? DefaultOutput;
             Directory.CreateDirectory(output);
 

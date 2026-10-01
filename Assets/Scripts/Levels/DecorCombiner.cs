@@ -48,6 +48,9 @@ namespace Ion.Levels
             public readonly List<Color32> C = new List<Color32>(1024);
             public readonly List<int> T = new List<int>(2048);
             public string Name;
+            // One entry per merged source renderer (see MeshElements).
+            public readonly List<int> ElemV0 = new List<int>(), ElemVN = new List<int>(), ElemT0 = new List<int>(), ElemTN = new List<int>();
+            public readonly List<Bounds> ElemBounds = new List<Bounds>();
         }
 
         static readonly List<Vector3> s_v = new List<Vector3>(256);
@@ -107,11 +110,15 @@ namespace Ion.Levels
                 bool mirrored = m.determinant < 0f;
 
                 int start = g.P.Count;
+                int tStart = g.T.Count;
+                Vector3 bMin = new Vector3(float.MaxValue, float.MaxValue, float.MaxValue), bMax = -bMin;
                 float invH = 1f / Mathf.Max(0.01f, info.Height);
                 for (int i = 0; i < s_v.Count; i++)
                 {
                     Vector3 p = m.MultiplyPoint3x4(s_v[i]);
                     g.P.Add(p);
+                    bMin = Vector3.Min(bMin, p);
+                    bMax = Vector3.Max(bMax, p);
                     g.N.Add(hasN ? nm.MultiplyVector(s_n[i]).normalized : Vector3.up);
 
                     float t = Mathf.Clamp01((p.y - info.BaseY) * invH);
@@ -140,6 +147,17 @@ namespace Ion.Levels
                         g.T.Add(start + s_t[i + 1]);
                         g.T.Add(start + s_t[i + 2]);
                     }
+                }
+
+                if (g.P.Count > start)
+                {
+                    g.ElemV0.Add(start);
+                    g.ElemVN.Add(g.P.Count - start);
+                    g.ElemT0.Add(tStart);
+                    g.ElemTN.Add(g.T.Count - tStart);
+                    var eb = new Bounds();
+                    eb.SetMinMax(bMin, bMax);
+                    g.ElemBounds.Add(eb);
                 }
 
                 // Gone for good: hidden now (so later queries this frame skip it), destroyed at frame end.
@@ -171,6 +189,8 @@ namespace Ion.Levels
                 r.receiveShadows = true;
                 if (key.Collider) go.AddComponent<MeshCollider>().sharedMesh = mesh;
                 go.AddComponent<Sliceable>();
+                go.AddComponent<MeshElements>().Set(mesh, g.ElemV0.ToArray(), g.ElemVN.ToArray(), g.ElemT0.ToArray(),
+                                                    g.ElemTN.ToArray(), g.ElemBounds.ToArray());
             }
             s_v.Clear();
             s_n.Clear();

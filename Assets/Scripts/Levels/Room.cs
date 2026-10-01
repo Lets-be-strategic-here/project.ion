@@ -322,6 +322,7 @@ namespace Ion.Levels
                 seg.GetComponent<MeshRenderer>().sharedMaterial = Palette.GetEmissive(Palette.Teal, 0.5f);
             }
             ring.gameObject.AddComponent<Spin>().DegreesPerSecond = 35f;
+            go.AddComponent<TeleporterFx>();
 
             var box = go.AddComponent<BoxCollider>();
             box.isTrigger = true;
@@ -363,6 +364,8 @@ namespace Ion.Levels
                 zone.Text = hint;
                 zone.Radius = radius + 0.3f;
             }
+            // Standing on a marker makes it the checkpoint: a fall respawns here, facing the puzzle.
+            go.AddComponent<PlayerSpawn>().CheckpointRadius = radius;
             return go;
         }
 

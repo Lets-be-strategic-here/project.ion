@@ -25,7 +25,10 @@
             <div class="ion-bar" role="progressbar" aria-label="Loading" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0">
               <div class="ion-bar-fill" id="ion-bar-fill"></div>
             </div>
-            <div class="ion-status" id="ion-status">Loading&hellip; 0%</div>
+            <div class="ion-status-row">
+              <span class="ion-status" id="ion-status">Loading&hellip;</span>
+              <span class="ion-pct" id="ion-pct">0%</span>
+            </div>
           </figcaption>
         </figure>
 
@@ -35,7 +38,6 @@
             <dt><kbd>W</kbd><kbd>A</kbd><kbd>S</kbd><kbd>D</kbd></dt><dd>move</dd>
             <dt><kbd>Mouse</kbd></dt><dd>look</dd>
             <dt><kbd>Space</kbd></dt><dd>jump</dd>
-            <dt><kbd>E</kbd></dt><dd>interact / pick up</dd>
             <dt><kbd>1</kbd>&ndash;<kbd>5</kbd> / <kbd>Wheel</kbd></dt><dd>choose photo</dd>
             <dt>hold <kbd>RMB</kbd></dt><dd>raise photo</dd>
             <dt><kbd>LMB</kbd></dt><dd>place photo</dd>
@@ -47,7 +49,7 @@
         </section>
 
         <nav class="ion-links">
-          <a href="#projects" id="ion-projects-link">View projects (no game)</a>
+          <a href="https://github.com/Vasiniks" id="ion-projects-link" target="_blank" rel="noopener">View projects</a>
         </nav>
         <p class="ion-made">Built with Unity</p>
       </div>
@@ -60,7 +62,7 @@
 
     <div id="ion-banner" aria-live="assertive"></div>
 
-    <a id="ion-corner-link" href="#projects" hidden>View projects</a>
+    <a id="ion-corner-link" href="https://github.com/Vasiniks" target="_blank" rel="noopener" hidden>View projects</a>
 
     <script>
       (function () {
@@ -69,6 +71,7 @@
         var barFill = document.getElementById('ion-bar-fill');
         var bar = barFill.parentNode;
         var statusEl = document.getElementById('ion-status');
+        var pctEl = document.getElementById('ion-pct');
         var banner = document.getElementById('ion-banner');
         var cornerLink = document.getElementById('ion-corner-link');
         var loaded = false;
@@ -92,16 +95,21 @@
           if (type !== 'error') setTimeout(function () { if (div.parentNode) div.parentNode.removeChild(div); }, 5000);
         }
 
+        // The loader's photo "develops" as the download progresses (CSS reads --p, 0..1).
         function setProgress(p) {
-          var pct = Math.round(Math.max(0, Math.min(1, p)) * 100);
-          barFill.style.transform = 'scaleX(' + (pct / 100) + ')';
+          p = Math.max(0, Math.min(1, p));
+          var pct = Math.round(p * 100);
+          barFill.style.transform = 'scaleX(' + p + ')';
           bar.setAttribute('aria-valuenow', String(pct));
-          statusEl.textContent = p >= 0.9 ? 'Developing the photo…' : 'Loading… ' + pct + '%';
+          loader.style.setProperty('--p', p.toFixed(3));
+          pctEl.textContent = pct + '%';
+          statusEl.textContent = p >= 1 ? 'Ready' : p >= 0.9 ? 'Developing the photo\u2026' : 'Loading\u2026';
         }
 
         function updateCornerLink() {
-          cornerLink.hidden = !loaded || document.pointerLockElement === canvas;
+          cornerLink.hidden = !loaded || document.pointerLockElement === canvas || !!window.__ionEndCard;
         }
+        window.__ionUpdateCornerLink = updateCornerLink;
         document.addEventListener('pointerlockchange', updateCornerLink);
 
         // The right mouse button raises a photo: never show the browser context menu over the game.

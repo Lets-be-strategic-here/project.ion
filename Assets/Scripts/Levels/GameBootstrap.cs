@@ -55,8 +55,19 @@ namespace Ion.Levels
             }
         }
 
+        /// <summary>True while <see cref="Restart"/> is undoing the run (effects stay quiet).</summary>
+        public static bool Restarting { get; private set; }
+
+        /// <summary>Raised after <see cref="Restart"/> has reset the game.</summary>
+        public static event System.Action Restarted;
+
         [RuntimeInitializeOnLoadMethod(RuntimeInitializeLoadType.SubsystemRegistration)]
-        static void ResetStatics() => Instance = null;
+        static void ResetStatics()
+        {
+            Instance = null;
+            Restarting = false;
+            Restarted = null;
+        }
 
         void Awake()
         {
@@ -198,8 +209,58 @@ namespace Ion.Levels
             AnnounceRoom(index);
         }
 
+        /// <summary>
+        /// "Play again": undoes every placement, empties the inventory, puts the photos back on their
+        /// pedestals, re-locks the instant camera, re-arms one-shot hints and returns to room 1. A soft
+        /// reset (no scene reload), so the self-installed systems (audio, quality, settings) keep running.
+        /// </summary>
+        public void Restart()
+        {
+            if (_player == null) return;
+            Restarting = true;
+            try
+            {
+                var ps = ProjectionSystem.Instance;
+                if (ps != null)
+                {
+                    int guard = 256;
+                    while (ps.CanRewind && guard-- > 0) ps.Rewind();
+                    ps.ClearHistory();
+                }
+
+                var holder = _player.GetComponent<PhotoHolder>();
+                if (holder != null) holder.ResetForRestart();
+                var inventory = _player.GetComponent<PhotoInventory>();
+                if (inventory != null) inventory.Clear();
+                var cam = _player.GetComponent<InstantCamera>();
+                if (cam != null)
+                {
+                    cam.SetCameraMode(false);
+                    cam.Unlocked = false;
+                    cam.Film = 0;
+                }
+
+                foreach (var p in Object.FindObjectsByType<PhotoPickup>(FindObjectsInactive.Include, FindObjectsSortMode.None))
+                    if (p.GetComponentInParent<ProjectionSystem>(true) == null) p.ResetPickup();
+                foreach (var c in Object.FindObjectsByType<CameraPickup>(FindObjectsInactive.Include, FindObjectsSortMode.None))
+                    if (c.GetComponentInParent<ProjectionSystem>(true) == null) c.ResetPickup();
+                foreach (var h in Object.FindObjectsByType<HintZone>(FindObjectsInactive.Include, FindObjectsSortMode.None))
+                    h.ResetZone();
+
+                _player.InputEnabled = true;
+                GoToRoom(0);
+            }
+            finally
+            {
+                Restarting = false;
+            }
+            Restarted?.Invoke();
+        }
+
         void AnnounceRoom(int index)
         {
+            // Room 1 opens with the tutorial line (top centre); a title toast would stack under it.
+            if (index == 0 && (Onboarding.IsGuiding || Restarting)) return;
             Room room = _contexts[index].Room;
             string text = string.IsNullOrEmpty(room.Intro) ? room.Title : room.Title + "  -  " + room.Intro;
             RoomContext.Toast(text, 4f);

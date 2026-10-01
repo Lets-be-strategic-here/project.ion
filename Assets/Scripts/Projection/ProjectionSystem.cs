@@ -24,7 +24,8 @@ namespace Ion.Projection
         public const int PlayerLayer = 8, PhotoUILayer = 9;
         /// <summary>Layers that are never cut, captured or rendered into previews.</summary>
         public const int ExcludedLayerMask = (1 << PlayerLayer) | (1 << PhotoUILayer);
-        public const int PreviewWidth = 512;
+        /// <summary>Default preview width (pre-made photos). Snapshots pass a larger width (they fill more of the screen).</summary>
+        public const int PreviewWidth = 768;
 
         // Pieces whose bounds are smaller than this in every dimension (local units) are dropped.
         const float MinPieceExtent = 1e-3f;
@@ -37,6 +38,27 @@ namespace Ion.Projection
         /// spawning ever thinner debris on later cuts. Assumes closed meshes (Sliceable contract).
         /// </summary>
         internal const float MinPieceThickness = 5e-4f;
+
+        /// <summary>
+        /// Collision cooking for pasted / cut pieces: no "faster simulation" pre-processing (pieces are
+        /// static, only the character controller sweeps against them), which roughly halves the cooking
+        /// time that dominates a placement on slow CPUs. Photo pieces are baked with the same options
+        /// when the photo is captured, so pasting them assigns pre-cooked data.
+        /// </summary>
+        public const MeshColliderCookingOptions CookingOptions =
+            MeshColliderCookingOptions.EnableMeshCleaning |
+            MeshColliderCookingOptions.WeldColocatedVertices |
+            MeshColliderCookingOptions.UseFastMidphase;
+
+        /// <summary>Pieces whose world-space bounds diagonal is below this get no collider (crumbs, decor).</summary>
+        internal const float MinColliderDiagonal = 0.25f;
+
+        /// <summary>
+        /// Cut pieces farther than this from the viewer's eye get their collider on the next frame
+        /// (play mode only), spreading the cooking cost of a placement over two frames. Everything the
+        /// player stands on or can reach within a frame is well inside this radius.
+        /// </summary>
+        public const float ImmediateColliderRadius = 6f;
 
         static ProjectionSystem s_instance;
         static bool s_quitting;
@@ -88,6 +110,19 @@ namespace Ion.Projection
         readonly Plane[] _planes = new Plane[PhotoFrustum.PlaneCount];
         readonly List<Mesh> _pieces = new List<Mesh>(8);
         readonly List<Collider> _colliderScratch = new List<Collider>(4);
+        readonly List<GameObject> _deferredColliders = new List<GameObject>(64);
+        readonly List<Renderer> _lastPasted = new List<Renderer>(64);
+        int _deferredFrame;
+        readonly System.Diagnostics.Stopwatch _watch = new System.Diagnostics.Stopwatch();
+
+        /// <summary>Renderers of the photo pieces pasted by the most recent placement (presentation effects).</summary>
+        public IReadOnlyList<Renderer> LastPastedRenderers => _lastPasted;
+
+        /// <summary>Cut pieces still waiting for their (deferred) collider.</summary>
+        public int DeferredColliderCount => _deferredColliders.Count;
+
+        /// <summary>Timing breakdown of the most recent placement (debug harness).</summary>
+        public string LastPlaceProfile { get; private set; } = string.Empty;
         Transform _templateHolder;
         Transform _placedRoot;
         Camera _previewCamera;
@@ -115,11 +150,12 @@ namespace Ion.Projection
         /// Copies everything inside the frustum at <paramref name="pose"/> (near = HoldNear,
         /// far = MaxFar) into a new photo and renders its preview. The world is not modified.
         /// </summary>
-        public PhotoData Capture(Pose pose, float fovY, float aspect, string label)
+        public PhotoData Capture(Pose pose, float fovY, float aspect, string label, int previewWidth = PreviewWidth)
         {
             var frustum = new PhotoFrustum { Pose = pose, FovY = fovY, Aspect = aspect, Near = HoldNear, Far = MaxFar };
             frustum.GetPlanes(_planes);
 
+            FlushDeferredColliders();
             var photo = new PhotoData { FovY = fovY, Aspect = aspect, Label = label };
             Matrix4x4 captureInverse = Matrix4x4.TRS(pose.position, pose.rotation, Vector3.one).inverse;
 
@@ -134,6 +170,10 @@ namespace Ion.Projection
                 if (inside == null) continue;
                 if (IsSliver(inside, localToWorld)) { DestroyObject(inside); continue; }
 
+                bool collide = mf.TryGetComponent(out Collider _) && WantsCollider(inside, localToWorld);
+                // Cook the collision data now (load time / behind the shutter) so pasting is cheap.
+                if (collide) Physics.BakeMesh(inside.GetEntityId(), false, CookingOptions);
+
                 photo.Pieces.Add(new PhotoPiece
                 {
                     Name = mf.gameObject.name,
@@ -143,7 +183,7 @@ namespace Ion.Projection
                     Layer = mf.gameObject.layer,
                     ShadowCasting = mr.shadowCastingMode,
                     ReceiveShadows = mr.receiveShadows,
-                    Collide = mf.TryGetComponent(out Collider _),
+                    Collide = collide,
                 });
             }
 
@@ -169,7 +209,7 @@ namespace Ion.Projection
                 });
             }
 
-            photo.Preview = RenderPreview(pose, fovY, aspect, label);
+            photo.Preview = RenderPreview(pose, fovY, aspect, label, previewWidth);
             return photo;
         }
 
@@ -182,6 +222,11 @@ namespace Ion.Projection
         public void Place(PhotoData photo, Camera viewer, float rollDegrees)
         {
             if (photo == null || viewer == null) return;
+            FlushDeferredColliders();
+            _watch.Restart();
+            int cooked = 0, deferred = 0;
+            Vector3 eye = viewer.transform.position;
+            bool canDefer = Application.isPlaying;
 
             PhotoFrustum frustum = PhotoFrustum.FromCamera(viewer, photo.FovY, photo.Aspect, rollDegrees, HoldNear, MaxFar);
             frustum.GetPlanes(_planes);
@@ -189,6 +234,10 @@ namespace Ion.Projection
 
             // 1. Replace every cut Sliceable by its outside pieces.
             Sliceable[] sliceables = FindObjectsByType<Sliceable>(FindObjectsSortMode.None);
+            double findMs = _watch.Elapsed.TotalMilliseconds, clipMs = 0, colliderMs = 0;
+            int clipped = 0;
+            double slowMs = 0;
+            string slowName = null;
             for (int i = 0; i < sliceables.Length; i++)
             {
                 Sliceable s = sliceables[i];
@@ -197,9 +246,28 @@ namespace Ion.Projection
 
                 _pieces.Clear();
                 Matrix4x4 localToWorld = mf.transform.localToWorldMatrix;
+                double c0 = _watch.Elapsed.TotalMilliseconds;
+
+                // Merged decor: only the elements that straddle the frustum are clipped.
+                if (s.TryGetComponent(out MeshElements elements) && elements.Mesh == mf.sharedMesh &&
+                    elements.Count > 1 && mf.sharedMesh.subMeshCount == 1)
+                {
+                    bool touched = CutByElements(s, mf, mr, elements, localToWorld, record, eye, canDefer,
+                                                 ref cooked, ref deferred, ref colliderMs);
+                    double tookE = _watch.Elapsed.TotalMilliseconds - c0;
+                    clipMs += tookE;
+                    if (tookE > slowMs) { slowMs = tookE; slowName = mf.name + "/elements"; }
+                    if (touched) clipped++;
+                    continue;
+                }
+
                 MeshClipper.Classification result =
                     MeshClipper.ClipOutside(mf.sharedMesh, localToWorld, _planes, _pieces);
+                double took = _watch.Elapsed.TotalMilliseconds - c0;
+                clipMs += took;
+                if (took > slowMs) { slowMs = took; slowName = mf.name + "/" + mf.sharedMesh.GetIndexCount(0) / 3; }
                 if (result == MeshClipper.Classification.Outside) continue;
+                clipped++;
 
                 Hide(s, mr, record);
                 for (int p = 0; p < _pieces.Count; p++)
@@ -207,10 +275,25 @@ namespace Ion.Projection
                     Mesh piece = _pieces[p];
                     if (IsSliver(piece, localToWorld)) { DestroyObject(piece); continue; }
                     record.OwnedMeshes.Add(piece);
-                    record.Spawned.Add(SpawnCutPiece(mf, mr, piece));
+                    GameObject cut = SpawnCutPiece(mf, mr, piece, out bool wantsCollider);
+                    record.Spawned.Add(cut);
+                    if (!wantsCollider) continue;
+                    if (canDefer && !IsNear(piece, cut.transform.localToWorldMatrix, eye))
+                    {
+                        _deferredColliders.Add(cut);
+                        deferred++;
+                    }
+                    else
+                    {
+                        double k0 = _watch.Elapsed.TotalMilliseconds;
+                        AddCollider(cut, piece);
+                        colliderMs += _watch.Elapsed.TotalMilliseconds - k0;
+                        cooked++;
+                    }
                 }
                 _pieces.Clear();
             }
+            double cutMs = _watch.Elapsed.TotalMilliseconds;
 
             // 2. Remove Interactables inside the frustum.
             Interactable[] interactables = FindObjectsByType<Interactable>(FindObjectsSortMode.None);
@@ -226,8 +309,13 @@ namespace Ion.Projection
             // 3. Paste the photo: worldPose = viewerPoseRolled * capturePose⁻¹ * pieceWorldPose.
             Matrix4x4 viewerFrame = Matrix4x4.TRS(frustum.Pose.position, frustum.Pose.rotation, Vector3.one);
             Transform root = EnsurePlacedRoot();
+            _lastPasted.Clear();
             for (int i = 0; i < photo.Pieces.Count; i++)
-                record.Spawned.Add(SpawnPhotoPiece(photo.Pieces[i], viewerFrame, root));
+            {
+                GameObject pasted = SpawnPhotoPiece(photo.Pieces[i], viewerFrame, root);
+                record.Spawned.Add(pasted);
+                if (pasted.TryGetComponent(out MeshRenderer pr)) _lastPasted.Add(pr);
+            }
             for (int i = 0; i < photo.Entities.Count; i++)
             {
                 PhotoEntity e = photo.Entities[i];
@@ -242,6 +330,12 @@ namespace Ion.Projection
 
             // 4. Push undo.
             _undo.Add(record);
+            if (deferred > 0) _deferredFrame = Time.frameCount;
+            _watch.Stop();
+            LastPlaceProfile = "find " + findMs.ToString("0.0") + " ms, clip " + clipMs.ToString("0.0") + " ms (" + clipped + " objects, slowest " + slowName + " " + slowMs.ToString("0.0") + " ms), cook " +
+                               colliderMs.ToString("0.0") + " ms, cut total " + cutMs.ToString("0.0") + " ms, paste " +
+                               (_watch.Elapsed.TotalMilliseconds - cutMs).ToString("0.0") + " ms, " +
+                               photo.Pieces.Count + " pasted, cut colliders " + cooked + " now / " + deferred + " next frame";
             Placed?.Invoke();
         }
 
@@ -251,6 +345,7 @@ namespace Ion.Projection
             if (_undo.Count == 0) return;
             PlacementRecord record = _undo[_undo.Count - 1];
             _undo.RemoveAt(_undo.Count - 1);
+            _lastPasted.Clear();
 
             for (int i = 0; i < record.Spawned.Count; i++)
             {
@@ -284,6 +379,159 @@ namespace Ion.Projection
         public static PhotoFrustum PlacementFrustum(PhotoData photo, Camera viewer, float rollDegrees)
         {
             return PhotoFrustum.FromCamera(viewer, photo.FovY, photo.Aspect, rollDegrees, HoldNear, MaxFar);
+        }
+
+        // ------------------------------------------------------------------ merged decor
+
+        static readonly List<Vector3> s_elemP = new List<Vector3>(4096), s_elemN = new List<Vector3>(4096);
+        static readonly List<Color32> s_elemC = new List<Color32>(4096);
+        static readonly List<int> s_elemT = new List<int>(8192);
+        static readonly List<Vector3> s_outP = new List<Vector3>(4096), s_outN = new List<Vector3>(4096);
+        static readonly List<Color32> s_outC = new List<Color32>(4096);
+        static readonly List<int> s_outT = new List<int>(8192);
+        readonly List<int> _keep = new List<int>(256), _straddle = new List<int>(64);
+
+        /// <summary>
+        /// Cuts a merged mesh element by element: elements whose bounds miss the frustum are copied into one
+        /// "kept" piece (which keeps its element table, so the next cut is fast too), elements inside are
+        /// dropped, and only the straddling ones go through <see cref="MeshClipper"/>. Same result as clipping
+        /// the whole mesh (elements are closed and independent), a fraction of the work. Returns false if the
+        /// object was not touched.
+        /// </summary>
+        bool CutByElements(Sliceable s, MeshFilter mf, MeshRenderer mr, MeshElements el, Matrix4x4 localToWorld,
+                           PlacementRecord record, Vector3 eye, bool canDefer, ref int cooked, ref int deferred, ref double colliderMs)
+        {
+            _keep.Clear();
+            _straddle.Clear();
+            bool removed = false;
+            for (int i = 0; i < el.Count; i++)
+            {
+                switch (MeshClipper.ClassifyBounds(el.Bounds[i], localToWorld, _planes))
+                {
+                    case MeshClipper.Classification.Outside: _keep.Add(i); break;
+                    case MeshClipper.Classification.Inside: removed = true; break;
+                    default: _straddle.Add(i); removed = true; break;
+                }
+            }
+            if (!removed) return false;
+
+            Hide(s, mr, record);
+            Mesh src = mf.sharedMesh;
+            src.GetVertices(s_elemP);
+            src.GetNormals(s_elemN);
+            src.GetColors(s_elemC);
+            src.GetIndices(s_elemT, 0);
+            bool hasN = s_elemN.Count == s_elemP.Count, hasC = s_elemC.Count == s_elemP.Count;
+            bool collide = s.TryGetComponent(out Collider _);
+
+            if (_keep.Count > 0)
+            {
+                Mesh kept = BuildElementMesh(src.name + " (kept)", el, _keep, hasN, hasC,
+                    out int[] v0, out int[] vn, out int[] t0, out int[] tn, out Bounds[] b);
+                record.OwnedMeshes.Add(kept);
+                GameObject go = SpawnCutPiece(mf, mr, kept, out bool wantsCollider);
+                go.AddComponent<MeshElements>().Set(kept, v0, vn, t0, tn, b);
+                record.Spawned.Add(go);
+                if (collide && wantsCollider)
+                {
+                    bool near = !canDefer;
+                    for (int i = 0; i < b.Length && !near; i++)
+                        near = WorldBounds(b[i], localToWorld).SqrDistance(eye) <= ImmediateColliderRadius * ImmediateColliderRadius;
+                    if (near)
+                    {
+                        double k0 = _watch.Elapsed.TotalMilliseconds;
+                        AddCollider(go, kept);
+                        colliderMs += _watch.Elapsed.TotalMilliseconds - k0;
+                        cooked++;
+                    }
+                    else
+                    {
+                        _deferredColliders.Add(go);
+                        deferred++;
+                    }
+                }
+            }
+
+            if (_straddle.Count > 0)
+            {
+                Mesh part = BuildElementMesh(src.name, el, _straddle, hasN, hasC, out _, out _, out _, out _, out _);
+                _pieces.Clear();
+                MeshClipper.Classification result = MeshClipper.ClipOutside(part, localToWorld, _planes, _pieces);
+                if (result == MeshClipper.Classification.Outside)
+                {
+                    _pieces.Add(part); // conservative bounds: nothing actually inside, keep it whole
+                    part = null;
+                }
+                for (int p = 0; p < _pieces.Count; p++)
+                {
+                    Mesh piece = _pieces[p];
+                    if (IsSliver(piece, localToWorld)) { DestroyObject(piece); continue; }
+                    record.OwnedMeshes.Add(piece);
+                    GameObject cut = SpawnCutPiece(mf, mr, piece, out bool wantsCollider);
+                    record.Spawned.Add(cut);
+                    if (!collide || !wantsCollider) continue;
+                    if (canDefer && !IsNear(piece, cut.transform.localToWorldMatrix, eye))
+                    {
+                        _deferredColliders.Add(cut);
+                        deferred++;
+                    }
+                    else
+                    {
+                        double k0 = _watch.Elapsed.TotalMilliseconds;
+                        AddCollider(cut, piece);
+                        colliderMs += _watch.Elapsed.TotalMilliseconds - k0;
+                        cooked++;
+                    }
+                }
+                _pieces.Clear();
+                if (part != null) DestroyObject(part);
+            }
+
+            s_elemP.Clear(); s_elemN.Clear(); s_elemC.Clear(); s_elemT.Clear();
+            return true;
+        }
+
+        /// <summary>Copies the listed elements (from the s_elem* buffers) into a new mesh with its own element table.</summary>
+        static Mesh BuildElementMesh(string name, MeshElements el, List<int> which, bool hasN, bool hasC,
+                                     out int[] v0, out int[] vn, out int[] t0, out int[] tn, out Bounds[] bounds)
+        {
+            s_outP.Clear(); s_outN.Clear(); s_outC.Clear(); s_outT.Clear();
+            int n = which.Count;
+            v0 = new int[n]; vn = new int[n]; t0 = new int[n]; tn = new int[n];
+            bounds = new Bounds[n];
+            for (int k = 0; k < n; k++)
+            {
+                int e = which[k];
+                int vs = el.VertexStart[e], vc = el.VertexCount[e], ts = el.IndexStart[e], tc = el.IndexCount[e];
+                int baseV = s_outP.Count;
+                v0[k] = baseV; vn[k] = vc; t0[k] = s_outT.Count; tn[k] = tc;
+                bounds[k] = el.Bounds[e];
+                for (int i = 0; i < vc; i++)
+                {
+                    s_outP.Add(s_elemP[vs + i]);
+                    if (hasN) s_outN.Add(s_elemN[vs + i]);
+                    if (hasC) s_outC.Add(s_elemC[vs + i]);
+                }
+                int shift = baseV - vs;
+                for (int i = 0; i < tc; i++) s_outT.Add(s_elemT[ts + i] + shift);
+            }
+            var mesh = new Mesh { name = name };
+            if (s_outP.Count > 65535) mesh.indexFormat = UnityEngine.Rendering.IndexFormat.UInt32;
+            mesh.SetVertices(s_outP);
+            if (hasN) mesh.SetNormals(s_outN);
+            if (hasC) mesh.SetColors(s_outC);
+            mesh.SetTriangles(s_outT, 0, true);
+            if (!hasN) mesh.RecalculateNormals();
+            return mesh;
+        }
+
+        static Bounds WorldBounds(Bounds b, Matrix4x4 localToWorld)
+        {
+            Vector3 c = b.center, e = b.extents;
+            var result = new Bounds(localToWorld.MultiplyPoint3x4(c), Vector3.zero);
+            for (int i = 0; i < 8; i++)
+                result.Encapsulate(localToWorld.MultiplyPoint3x4(c + new Vector3((i & 1) == 0 ? -e.x : e.x, (i & 2) == 0 ? -e.y : e.y, (i & 4) == 0 ? -e.z : e.z)));
+            return result;
         }
 
         // ------------------------------------------------------------------ helpers
@@ -376,7 +624,7 @@ namespace Ion.Projection
             _colliderScratch.Clear();
         }
 
-        static GameObject SpawnCutPiece(MeshFilter source, MeshRenderer sourceRenderer, Mesh mesh)
+        static GameObject SpawnCutPiece(MeshFilter source, MeshRenderer sourceRenderer, Mesh mesh, out bool wantsCollider)
         {
             GameObject src = source.gameObject;
             var go = new GameObject(src.name + " (cut)") { layer = src.layer };
@@ -385,8 +633,8 @@ namespace Ion.Projection
             t.localPosition = st.localPosition;
             t.localRotation = st.localRotation;
             t.localScale = st.localScale;
-            AddGeometry(go, mesh, sourceRenderer.sharedMaterials, sourceRenderer.shadowCastingMode, sourceRenderer.receiveShadows,
-                        src.TryGetComponent(out Collider _));
+            AddGeometry(go, mesh, sourceRenderer.sharedMaterials, sourceRenderer.shadowCastingMode, sourceRenderer.receiveShadows);
+            wantsCollider = src.TryGetComponent(out Collider _) && WantsCollider(mesh, t.localToWorldMatrix);
             return go;
         }
 
@@ -399,7 +647,9 @@ namespace Ion.Projection
             DecomposeTRS(world, out Vector3 position, out Quaternion rotation, out Vector3 scale);
             t.SetPositionAndRotation(position, rotation);
             t.localScale = scale; // root is never moved or scaled, so local == world
-            AddGeometry(go, piece.Mesh, piece.Materials, piece.ShadowCasting, piece.ReceiveShadows, piece.Collide);
+            AddGeometry(go, piece.Mesh, piece.Materials, piece.ShadowCasting, piece.ReceiveShadows);
+            // Pre-baked at capture (see Capture), so this does not cook.
+            if (piece.Collide) AddCollider(go, piece.Mesh);
             return go;
         }
 
@@ -423,20 +673,54 @@ namespace Ion.Projection
                 : Quaternion.identity;
         }
 
-        static void AddGeometry(GameObject go, Mesh mesh, Material[] materials, ShadowCastingMode shadows, bool receiveShadows, bool collide)
+        static void AddGeometry(GameObject go, Mesh mesh, Material[] materials, ShadowCastingMode shadows, bool receiveShadows)
         {
             go.AddComponent<MeshFilter>().sharedMesh = mesh;
             var r = go.AddComponent<MeshRenderer>();
             r.sharedMaterials = materials;
             r.shadowCastingMode = shadows;
             r.receiveShadows = receiveShadows;
-            if (collide)
-            {
-                var col = go.AddComponent<MeshCollider>();
-                col.convex = false;
-                col.sharedMesh = mesh;
-            }
             go.AddComponent<Sliceable>();
+        }
+
+        static void AddCollider(GameObject go, Mesh mesh)
+        {
+            var col = go.AddComponent<MeshCollider>();
+            col.convex = false;
+            col.cookingOptions = CookingOptions; // before sharedMesh, which cooks (or picks up baked data)
+            col.sharedMesh = mesh;
+        }
+
+        /// <summary>World-space AABB of a mesh under a matrix (8 transformed corners).</summary>
+        static Bounds WorldBounds(Mesh mesh, Matrix4x4 localToWorld) => WorldBounds(mesh.bounds, localToWorld);
+
+        /// <summary>False for crumbs too small to matter for walking (no collider is cooked for them).</summary>
+        internal static bool WantsCollider(Mesh mesh, Matrix4x4 localToWorld)
+        {
+            return WorldBounds(mesh, localToWorld).size.sqrMagnitude >= MinColliderDiagonal * MinColliderDiagonal;
+        }
+
+        static bool IsNear(Mesh mesh, Matrix4x4 localToWorld, Vector3 eye)
+        {
+            Bounds b = WorldBounds(mesh, localToWorld);
+            return b.SqrDistance(eye) <= ImmediateColliderRadius * ImmediateColliderRadius;
+        }
+
+        void Update()
+        {
+            if (_deferredColliders.Count > 0 && Time.frameCount > _deferredFrame) FlushDeferredColliders();
+        }
+
+        /// <summary>Cooks the colliders deferred by the last placement now.</summary>
+        public void FlushDeferredColliders()
+        {
+            for (int i = 0; i < _deferredColliders.Count; i++)
+            {
+                GameObject go = _deferredColliders[i];
+                if (go == null || !go.activeSelf || !go.TryGetComponent(out MeshFilter mf) || mf.sharedMesh == null) continue;
+                if (!go.TryGetComponent(out MeshCollider _)) AddCollider(go, mf.sharedMesh);
+            }
+            _deferredColliders.Clear();
         }
 
         Transform EnsureTemplateHolder()
@@ -508,15 +792,17 @@ namespace Ion.Projection
         /// Creates the photo's preview texture (PreviewWidth wide, height from the aspect) and renders it
         /// now, or on the next LateUpdate if the render pipeline is not up yet.
         /// </summary>
-        Texture2D RenderPreview(Pose pose, float fovY, float aspect, string label)
+        Texture2D RenderPreview(Pose pose, float fovY, float aspect, string label, int width)
         {
-            int width = PreviewWidth;
+            width = Mathf.Clamp(width, 16, 2048);
             int height = Mathf.Clamp(Mathf.RoundToInt(width / Mathf.Max(0.05f, aspect)), 1, 2048);
-            var tex = new Texture2D(width, height, TextureFormat.RGBA32, false, false)
+            // Mipmapped: the same texture is drawn full size (raised) and as an 84 px inventory thumbnail.
+            var tex = new Texture2D(width, height, TextureFormat.RGBA32, true, false)
             {
                 name = "Photo " + label,
                 wrapMode = TextureWrapMode.Clamp,
-                filterMode = FilterMode.Bilinear,
+                filterMode = FilterMode.Trilinear,
+                anisoLevel = 1,
             };
 
             if (SystemInfo.graphicsDeviceType == GraphicsDeviceType.Null)
@@ -553,7 +839,7 @@ namespace Ion.Projection
             var grey = new Color32(200, 196, 188, 255);
             for (int i = 0; i < pixels.Length; i++) pixels[i] = grey;
             tex.SetPixels32(pixels);
-            tex.Apply(false, false);
+            tex.Apply(true, false);
         }
 
         /// <summary>
@@ -595,7 +881,7 @@ namespace Ion.Projection
             RenderTexture previous = RenderTexture.active;
             RenderTexture.active = rt;
             target.ReadPixels(new Rect(0, 0, width, height), 0, 0, false);
-            target.Apply(false, false);
+            target.Apply(true, false);
             RenderTexture.active = previous;
 
             cam.targetTexture = null;

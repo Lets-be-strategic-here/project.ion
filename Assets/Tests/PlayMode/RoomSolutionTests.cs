@@ -199,6 +199,7 @@ namespace Ion.Tests.PlayMode
             Assert.IsNotNull(snap, "snapshot failed. " + State);
             Assert.AreEqual(2, Cam.Film);
             Assert.Greater(snap.PieceCount, 0);
+            Assert.AreEqual(InstantCamera.CaptureFovY, snap.FovY, 1e-3f, "snapshots use the photo shape");
             Assert.IsTrue(Inventory.Contains(snap));
 
             yield return GoTo("camera:place");
@@ -229,6 +230,14 @@ namespace Ion.Tests.PlayMode
             yield return GoTo("gallery:spawn");
             var tp = FindTeleporter(room);
             int fired = tp.FireCount;
+
+            // The frames hang the player's photos: the three pre-made ones on the left wall.
+            var curator = room.WorldRoot.GetComponent<GalleryCurator>();
+            Assert.IsNotNull(curator, "the gallery has no curator");
+            curator.Refresh();
+            Assert.AreEqual(6, curator.Hung.Count);
+            for (int i = 0; i < 3; i++)
+                Assert.IsNotNull(curator.Hung[i], "frame " + i + " should hold room " + (i + 1) + "'s photo");
 
             var walk = new WalkResult();
             yield return WalkTo(room.SolutionFeet(Spot(room, "exit")), 12f, walk, 0.6f);

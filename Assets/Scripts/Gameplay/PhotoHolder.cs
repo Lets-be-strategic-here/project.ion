@@ -165,6 +165,17 @@ namespace Ion.Gameplay
             return IsRaised;
         }
 
+        /// <summary>Game restart: forgets the undo history and lowers the photo.</summary>
+        public void ResetForRestart()
+        {
+            AutomationRaise = false;
+            SetRaised(false);
+            _consumed.Clear();
+            _latePlacedSkips = 0;
+            _waitForRmbRelease = false;
+            HasRaisedOnce = false;
+        }
+
         /// <summary>Lowers the photo (automation; same as releasing RMB).</summary>
         public void Lower()
         {
@@ -267,6 +278,7 @@ namespace Ion.Gameplay
             float roll = RollDegrees;
             // The pre-made photos are taken level; forgive a slightly tilted view.
             _fpc.SnapPitchLevel(LevelSnapDegrees);
+            _fpc.ResetViewEffects(); // the cut uses the exact eye pose, never a head-bob offset
             AutomationRaise = false;
             SetRaised(false);
             _waitForRmbRelease = true;
@@ -326,7 +338,10 @@ namespace Ion.Gameplay
             if (_consumed.Count == 0) return;
             var c = _consumed.Pop();
             if (c.Photo != null && !_inventory.Contains(c.Photo))
+            {
                 _inventory.Insert(c.Index, c.Photo);
+                GameplayUI.PhotoReturned(c.Photo);
+            }
 
             // The rewound geometry may have been what the player stood on (mid-bridge, in a pasted pit)
             // or the restored world may now enclose them (standing in a cut doorway). Then put them back
@@ -384,8 +399,7 @@ namespace Ion.Gameplay
             if (ps != null && ps.CanRewind)
             {
                 SetRaised(false);
-                ps.Rewind();
-                GameplayUI.Toast("Rewound");
+                ps.Rewind(); // the rewind screen effect and the photo flying home say it all
             }
             else
             {

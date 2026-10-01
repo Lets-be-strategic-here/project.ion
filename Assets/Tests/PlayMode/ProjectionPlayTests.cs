@@ -52,7 +52,7 @@ namespace Ion.Tests.PlayMode
             Assert.AreEqual(presets, Inventory.Count);
             Assert.IsTrue(Cam.Unlocked);
             Assert.IsTrue(Dbg.TrySelect("Stairs"));
-            Assert.AreEqual("Stairs (sideways)", Inventory.Selected.Label);
+            Assert.AreEqual("Stairs", Inventory.Selected.Label);
             Dbg.Raise("");
             yield return null;
             Assert.IsTrue(Holder.IsRaised);

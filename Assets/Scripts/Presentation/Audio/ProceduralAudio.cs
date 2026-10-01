@@ -355,6 +355,7 @@ namespace Ion.Presentation.Audio
 
         void OnRewound()
         {
+            if (_rewoundFrame == Time.frameCount) return; // a restart rewinds everything at once: one sound
             _rewoundFrame = Time.frameCount;
             Play(_rewind, RewindVolume, Jitter(0.03f));
         }
