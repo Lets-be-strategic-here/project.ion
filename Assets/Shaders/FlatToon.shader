@@ -5,16 +5,27 @@
 //  * gradient ambient (sky / equator / ground) from Atmosphere globals, SH fallback
 //  * fog: URP MixFog when a fog keyword is active, otherwise Atmosphere's global linear fog
 //  * ShadowCaster + DepthOnly passes so the object casts shadows and writes depth
+//  * soft 3-band ramp (smoothstep edges), blue-slate shadow tint, faint sky-coloured rim light,
+//    no specular
+//  * optional foliage sway (_Sway > 0): world-position-phased horizontal offset scaled by the
+//    vertex's object-space height above _SwayAnchorY. Applied identically in every pass so depth,
+//    shadows and colour stay in sync. Global kill switches via _IonToonParams (Ambience).
 Shader "Ion/FlatToon"
 {
     Properties
     {
         _BaseColor ("Base Color", Color) = (1, 1, 1, 1)
-        _ShadowTint ("Shadow Tint", Color) = (0.62, 0.60, 0.86, 1)
-        _RampSmooth ("Ramp Edge Softness", Range(0.001, 0.2)) = 0.03
+        _ShadowTint ("Shadow Tint (blue-slate)", Color) = (0.66, 0.73, 0.88, 1)
+        _RampSmooth ("Ramp Edge Softness", Range(0.001, 0.2)) = 0.06
+        _MidBand ("Mid Band Level", Range(0, 1)) = 0.55
         _LitStrength ("Direct Light Strength", Range(0, 2)) = 0.65
         _LitAmbient ("Ambient On Lit Side", Range(0, 1)) = 0.5
+        _RimStrength ("Rim Strength", Range(0, 1)) = 0.22
+        _RimPower ("Rim Power", Range(1, 8)) = 3
         [HDR] _EmissionColor ("Emission", Color) = (0, 0, 0, 1)
+        _Sway ("Sway Amount (m at height 1)", Float) = 0
+        _SwayFreq ("Sway Frequency", Float) = 1.3
+        _SwayAnchorY ("Sway Anchor (object-space Y)", Float) = -0.5
     }
 
     SubShader
@@ -36,10 +47,39 @@ Shader "Ion/FlatToon"
             half4 _BaseColor;
             half4 _ShadowTint;
             half _RampSmooth;
+            half _MidBand;
             half _LitStrength;
             half _LitAmbient;
+            half _RimStrength;
+            half _RimPower;
             half4 _EmissionColor;
+            float _Sway;
+            float _SwayFreq;
+            float _SwayAnchorY;
         CBUFFER_END
+
+        // Global look switches, set by Ion.Presentation.Ambience:
+        // x = rim multiplier, y = sway multiplier, z = 1 when set (otherwise both default to 1).
+        float4 _IonToonParams;
+
+        // Object -> world with optional foliage sway. Cheap uniform branch when _Sway == 0.
+        float3 IonObjectToWorld(float3 positionOS)
+        {
+            float3 positionWS = TransformObjectToWorld(positionOS);
+            float amount = _Sway * (_IonToonParams.z > 0.5 ? _IonToonParams.y : 1.0);
+            if (amount > 0.0)
+            {
+                float h = max(0.0, positionOS.y - _SwayAnchorY);
+                float t = _Time.y * _SwayFreq;
+                // Phase from the (unswayed) world position: coherent across cut / photo pieces and
+                // between the split (flat-shaded) vertices of a face, so no cracks appear.
+                float phase = dot(positionWS.xz, float2(0.37, 0.29));
+                float gust = 0.7 + 0.3 * sin(t * 0.31 + phase * 0.5);
+                float2 wave = float2(sin(t + phase), 0.6 * sin(t * 0.83 + phase * 1.3 + 1.7));
+                positionWS.xz += wave * (gust * amount * h);
+            }
+            return positionWS;
+        }
         ENDHLSL
 
         // ------------------------------------------------------------------
@@ -96,13 +136,13 @@ Shader "Ion/FlatToon"
                 UNITY_TRANSFER_INSTANCE_ID(input, output);
                 UNITY_INITIALIZE_VERTEX_OUTPUT_STEREO(output);
 
-                VertexPositionInputs pos = GetVertexPositionInputs(input.positionOS.xyz);
-                VertexNormalInputs nrm = GetVertexNormalInputs(input.normalOS);
+                float3 positionWS = IonObjectToWorld(input.positionOS.xyz);
+                float4 positionCS = TransformWorldToHClip(positionWS);
 
-                output.positionCS = pos.positionCS;
-                output.positionWS = pos.positionWS;
-                output.normalWS = nrm.normalWS;
-                output.fogFactor = ComputeFogFactor(pos.positionCS.z);
+                output.positionCS = positionCS;
+                output.positionWS = positionWS;
+                output.normalWS = TransformObjectToWorldNormal(input.normalOS);
+                output.fogFactor = ComputeFogFactor(positionCS.z);
                 return output;
             }
 
@@ -139,17 +179,32 @@ Shader "Ion/FlatToon"
                 half ndl = saturate(dot(n, mainLight.direction));
                 half lightTerm = ndl * shadow;
 
-                // 3-step ramp: 0 (shade), 0.5 (half-lit), 1 (lit) with slightly soft edges.
+                // 3-band ramp: 0 (shade), _MidBand (half-lit), 1 (lit) with soft smoothstep edges.
                 half s = _RampSmooth;
-                half band = 0.5h * smoothstep(0.08h - s, 0.08h + s, lightTerm)
-                          + 0.5h * smoothstep(0.45h - s, 0.45h + s, lightTerm);
+                half band = _MidBand * smoothstep(0.08h - s, 0.08h + s, lightTerm)
+                          + (1.0h - _MidBand) * smoothstep(0.45h - s, 0.45h + s, lightTerm);
 
                 half3 albedo = _BaseColor.rgb;
                 half3 ambient = GradientAmbient(n);
 
+                // Shade side: ambient tinted towards blue-slate (no black shadows).
                 half3 shadeLight = ambient * _ShadowTint.rgb;
                 half3 litLight = ambient * _LitAmbient + mainLight.color * _LitStrength;
                 half3 color = albedo * lerp(shadeLight, litLight, band);
+
+                // Subtle rim from the sky colour, strongest on the shade side. No specular.
+                half rimScale = _IonToonParams.z > 0.5 ? (half)_IonToonParams.x : 1.0h;
+                half rimAmount = _RimStrength * rimScale;
+                if (rimAmount > 0.001h)
+                {
+                    half3 v = normalize(GetWorldSpaceViewDir(input.positionWS));
+                    half fres = pow(1.0h - saturate(dot(n, v)), _RimPower);
+                    half3 skyCol = dot(_IonAmbientSky.rgb, half3(1, 1, 1)) > 0.0001h ? (half3)_IonAmbientSky.rgb : SampleSH(half3(0, 1, 0));
+                    // Less on up-facing faces so distant ground at grazing angles is not washed out.
+                    half facing = 1.0h - 0.7h * saturate(n.y);
+                    color += skyCol * (fres * rimAmount * facing * (1.0h - 0.6h * band));
+                }
+
                 color += _EmissionColor.rgb;
 
                 // URP fog when this variant has fog (static keyword, or dynamic_branch keywords on
@@ -212,7 +267,7 @@ Shader "Ion/FlatToon"
                 Varyings output;
                 UNITY_SETUP_INSTANCE_ID(input);
 
-                float3 positionWS = TransformObjectToWorld(input.positionOS.xyz);
+                float3 positionWS = IonObjectToWorld(input.positionOS.xyz);
                 float3 normalWS = TransformObjectToWorldNormal(input.normalOS);
 
                 #if defined(_CASTING_PUNCTUAL_LIGHT_SHADOW)
@@ -271,7 +326,7 @@ Shader "Ion/FlatToon"
                 Varyings output = (Varyings)0;
                 UNITY_SETUP_INSTANCE_ID(input);
                 UNITY_INITIALIZE_VERTEX_OUTPUT_STEREO(output);
-                output.positionCS = TransformObjectToHClip(input.positionOS.xyz);
+                output.positionCS = TransformWorldToHClip(IonObjectToWorld(input.positionOS.xyz));
                 return output;
             }
 
@@ -317,7 +372,7 @@ Shader "Ion/FlatToon"
                 Varyings output = (Varyings)0;
                 UNITY_SETUP_INSTANCE_ID(input);
                 UNITY_INITIALIZE_VERTEX_OUTPUT_STEREO(output);
-                output.positionCS = TransformObjectToHClip(input.positionOS.xyz);
+                output.positionCS = TransformWorldToHClip(IonObjectToWorld(input.positionOS.xyz));
                 output.normalWS = TransformObjectToWorldNormal(input.normalOS);
                 return output;
             }

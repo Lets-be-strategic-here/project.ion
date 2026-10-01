@@ -6,26 +6,39 @@ namespace Ion.Presentation
     /// <summary>
     /// Sets up the scene's sun, gradient sky, trilight ambient and linear fog.
     /// Call once at startup (GameBootstrap). Safe to call again; it reuses the sun.
+    /// Look: Viewfinder-like pastel calm — warm sun ~40° up, sky-blue / peach / lilac trilight,
+    /// linear fog (25 → 140 m) that fades into the sky's horizon colour.
+    /// Further ambience (clouds, motes, sway, sun glow, rim) lives in <c>Ion.Presentation.Ambience</c>.
     /// </summary>
     public static class Atmosphere
     {
         public const string SkyShaderName = "Ion/GradientSky";
         public const string SunName = "Ion Sun";
 
-        // Sky gradient (sRGB).
-        public static readonly Color SkyTop = new Color32(0x8E, 0xC9, 0xEA, 0xFF);
-        public static readonly Color SkyHorizon = new Color32(0xFF, 0xF1, 0xDE, 0xFF);
-        public static readonly Color SkyBottom = new Color32(0xD8, 0xDE, 0xE6, 0xFF);
+        // Sky gradient (sRGB): clear blue overhead -> warm peach-cream horizon -> soft lilac haze below.
+        public static readonly Color SkyTop = new Color32(0x92, 0xC8, 0xE8, 0xFF);
+        public static readonly Color SkyHorizon = new Color32(0xFB, 0xEC, 0xDF, 0xFF);
+        public static readonly Color SkyBottom = new Color32(0xE4, 0xDC, 0xE8, 0xFF);
 
-        // Ambient gradient (sRGB). Kept fairly bright: the toon ramp darkens the shade side.
-        public static readonly Color AmbientSky = new Color32(0xB4, 0xD6, 0xEE, 0xFF);
-        public static readonly Color AmbientEquator = new Color32(0xE6, 0xDC, 0xD2, 0xFF);
-        public static readonly Color AmbientGround = new Color32(0xA8, 0x9C, 0xA8, 0xFF);
+        // Trilight ambient (sRGB): sky blue from above, peach at the equator, lilac from below.
+        // Kept fairly bright: the toon ramp tints the shade side blue-slate on top of this.
+        public static readonly Color AmbientSky = new Color32(0xBF, 0xE3, 0xF2, 0xFF);
+        public static readonly Color AmbientEquator = new Color32(0xFC, 0xE8, 0xD8, 0xFF);
+        public static readonly Color AmbientGround = new Color32(0xC4, 0xB8, 0xD2, 0xFF);
 
-        public static readonly Color SunColor = new Color32(0xFF, 0xF0, 0xDA, 0xFF);
+        // Warm late-morning sun.
+        public static readonly Color SunColor = new Color32(0xFF, 0xEA, 0xCC, 0xFF);
+        public const float SunIntensity = 1.2f;
+        /// <summary>Sun elevation above the horizon (degrees) and compass yaw of the light's forward.</summary>
+        public const float SunElevation = 40f;
+        public const float SunYaw = -38f;
 
-        public const float FogStart = 45f;
-        public const float FogEnd = 240f;
+        public const float FogStart = 25f;
+        public const float FogEnd = 140f;
+
+        // Sky-shader sun disc / halo (Ion/GradientSky).
+        const float SkySunSize = 900f;
+        const float SkySunHalo = 0.32f;
 
         static readonly int IonAmbientSky = Shader.PropertyToID("_IonAmbientSky");
         static readonly int IonAmbientEquator = Shader.PropertyToID("_IonAmbientEquator");
@@ -53,6 +66,10 @@ namespace Ion.Presentation
                     s_SkyMaterial.SetColor("_HorizonColor", SkyHorizon);
                     s_SkyMaterial.SetColor("_BottomColor", SkyBottom);
                     s_SkyMaterial.SetColor("_SunColor", SunColor);
+                    if (s_SkyMaterial.HasProperty("_SunSize")) s_SkyMaterial.SetFloat("_SunSize", SkySunSize);
+                    if (s_SkyMaterial.HasProperty("_SunHalo")) s_SkyMaterial.SetFloat("_SunHalo", SkySunHalo);
+                    if (s_SkyMaterial.HasProperty("_TopExponent")) s_SkyMaterial.SetFloat("_TopExponent", 0.7f);
+                    if (s_SkyMaterial.HasProperty("_BottomExponent")) s_SkyMaterial.SetFloat("_BottomExponent", 0.45f);
                 }
                 else
                 {
@@ -100,7 +117,7 @@ namespace Ion.Presentation
 
             sun.type = LightType.Directional;
             sun.color = SunColor;
-            sun.intensity = 1.15f;
+            sun.intensity = SunIntensity;
             sun.shadows = LightShadows.Soft;
             sun.shadowStrength = 1f;
             sun.shadowBias = 0.04f;
@@ -108,7 +125,8 @@ namespace Ion.Presentation
             sun.renderMode = LightRenderMode.ForcePixel;
             // Never light/shadow the UI layer.
             sun.cullingMask = ~(1 << 9);
-            sun.transform.rotation = Quaternion.Euler(52f, -38f, 0f);
+            // Sun behind-right of the +Z walking direction, 40° up: long soft shadows, lit fronts.
+            sun.transform.rotation = Quaternion.Euler(SunElevation, SunYaw, 0f);
             return sun;
         }
     }

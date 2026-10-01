@@ -36,7 +36,7 @@ namespace Ion.EditorTools
         public const int PlayerLayer = 8;
         public const int PhotoUILayer = 9;
 
-        static readonly string[] RequiredShaders = { "Ion/FlatToon", "Ion/GradientSky", "Ion/PhotoDisplay" };
+        static readonly string[] RequiredShaders = { "Ion/FlatToon", "Ion/GradientSky", "Ion/PhotoDisplay", "Ion/AmbienceSoft" };
         // Runtime fallbacks used by Presentation when an Ion shader is missing; cheap to include.
         static readonly string[] OptionalShaders = { "Universal Render Pipeline/Unlit" };
 
