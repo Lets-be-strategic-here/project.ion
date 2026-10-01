@@ -112,3 +112,4 @@ InitTestScene*.unity*
 .claude/.cc-writes/
 .claude/settings.local.json
 .DS_Store
+.claude/scheduled_tasks.lock
