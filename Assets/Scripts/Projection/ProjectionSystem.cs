@@ -143,6 +143,7 @@ namespace Ion.Projection
                     Layer = mf.gameObject.layer,
                     ShadowCasting = mr.shadowCastingMode,
                     ReceiveShadows = mr.receiveShadows,
+                    Collide = mf.TryGetComponent(out Collider _),
                 });
             }
 
@@ -384,7 +385,8 @@ namespace Ion.Projection
             t.localPosition = st.localPosition;
             t.localRotation = st.localRotation;
             t.localScale = st.localScale;
-            AddGeometry(go, mesh, sourceRenderer.sharedMaterials, sourceRenderer.shadowCastingMode, sourceRenderer.receiveShadows);
+            AddGeometry(go, mesh, sourceRenderer.sharedMaterials, sourceRenderer.shadowCastingMode, sourceRenderer.receiveShadows,
+                        src.TryGetComponent(out Collider _));
             return go;
         }
 
@@ -397,7 +399,7 @@ namespace Ion.Projection
             DecomposeTRS(world, out Vector3 position, out Quaternion rotation, out Vector3 scale);
             t.SetPositionAndRotation(position, rotation);
             t.localScale = scale; // root is never moved or scaled, so local == world
-            AddGeometry(go, piece.Mesh, piece.Materials, piece.ShadowCasting, piece.ReceiveShadows);
+            AddGeometry(go, piece.Mesh, piece.Materials, piece.ShadowCasting, piece.ReceiveShadows, piece.Collide);
             return go;
         }
 
@@ -421,16 +423,19 @@ namespace Ion.Projection
                 : Quaternion.identity;
         }
 
-        static void AddGeometry(GameObject go, Mesh mesh, Material[] materials, ShadowCastingMode shadows, bool receiveShadows)
+        static void AddGeometry(GameObject go, Mesh mesh, Material[] materials, ShadowCastingMode shadows, bool receiveShadows, bool collide)
         {
             go.AddComponent<MeshFilter>().sharedMesh = mesh;
             var r = go.AddComponent<MeshRenderer>();
             r.sharedMaterials = materials;
             r.shadowCastingMode = shadows;
             r.receiveShadows = receiveShadows;
-            var col = go.AddComponent<MeshCollider>();
-            col.convex = false;
-            col.sharedMesh = mesh;
+            if (collide)
+            {
+                var col = go.AddComponent<MeshCollider>();
+                col.convex = false;
+                col.sharedMesh = mesh;
+            }
             go.AddComponent<Sliceable>();
         }
 
@@ -474,9 +479,16 @@ namespace Ion.Projection
         readonly List<PendingPreview> _pendingPreviews = new List<PendingPreview>();
 
         /// <summary>
+        /// Previews captured before the render pipeline was up, still waiting for LateUpdate. Their scene
+        /// (e.g. a diorama) must stay visible until this drops to zero.
+        /// </summary>
+        public int PendingPreviewCount => _pendingPreviews.Count;
+
+        /// <summary>
         /// False while a scriptable pipeline is configured but has not been instantiated yet (before the
-        /// first rendered frame, e.g. when GameBootstrap captures in Awake). Render requests submitted then
-        /// cannot be served, so previews are deferred to LateUpdate.
+        /// first rendered frame; in batch mode the editor never renders a frame by itself). Previews are
+        /// then rendered immediately (a render request instantiates the pipeline) and once more from
+        /// LateUpdate when the pipeline is up.
         /// </summary>
         static bool CanRenderNow =>
             GraphicsSettings.currentRenderPipeline == null || RenderPipelineManager.currentPipeline != null;
@@ -507,20 +519,41 @@ namespace Ion.Projection
                 filterMode = FilterMode.Bilinear,
             };
 
-            if (CanRenderNow)
+            if (SystemInfo.graphicsDeviceType == GraphicsDeviceType.Null)
+            {
+                // No GPU (-nographics batch mode / headless server): keep a neutral placeholder.
+                FillPlaceholder(tex);
+            }
+            else if (CanRenderNow)
             {
                 RenderInto(tex, pose, fovY, aspect);
             }
             else
             {
-                var pixels = new Color32[width * height];
-                var grey = new Color32(200, 196, 188, 255);
-                for (int i = 0; i < pixels.Length; i++) pixels[i] = grey;
-                tex.SetPixels32(pixels);
-                tex.Apply(false, false);
+                // The pipeline object does not exist yet (no frame rendered: batch mode, first frames of the
+                // Web player). A render request instantiates it on demand, so render right away; but also
+                // render again once the pipeline is confirmed up, in case this early request was not served.
+                FillPlaceholder(tex);
+                try
+                {
+                    RenderInto(tex, pose, fovY, aspect);
+                }
+                catch (System.Exception e)
+                {
+                    Debug.LogWarning("ProjectionSystem: early preview render failed (" + e.Message + "); retrying later.");
+                }
                 _pendingPreviews.Add(new PendingPreview { Pose = pose, FovY = fovY, Aspect = aspect, Target = tex });
             }
             return tex;
+        }
+
+        static void FillPlaceholder(Texture2D tex)
+        {
+            var pixels = new Color32[tex.width * tex.height];
+            var grey = new Color32(200, 196, 188, 255);
+            for (int i = 0; i < pixels.Length; i++) pixels[i] = grey;
+            tex.SetPixels32(pixels);
+            tex.Apply(false, false);
         }
 
         /// <summary>

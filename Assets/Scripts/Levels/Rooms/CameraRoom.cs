@@ -62,6 +62,13 @@ namespace Ion.Levels
                 "Hold up your ramp snapshot here (RMB) and place it (LMB)");
             ctx.CreateHint(new Vector3(0f, 0f, 12f), 2f, "Too high. There was a ramp behind you...", 3.5f).Once = true;
             ctx.CreateTeleporter(new Vector3(10.5f, CliffTop, 15.5f));
+
+            // Beside the camera pedestal (the pickup unlocks within 1.2 m).
+            AddSolution("pickup", RoomSolution.Kind.Goal, new Vector3(-2.5f, 0f, 3f));
+            AddSolution("snap", RoomSolution.Kind.Snap, new Vector3(0f, 0f, -11f), 180f);
+            AddSolution("place", RoomSolution.Kind.Place, new Vector3(0f, 0f, 8f), 0f, 0f, -1);
+            AddSolution("far", RoomSolution.Kind.Goal, new Vector3(0f, CliffTop, 22f));
+            AddSolution("exit", RoomSolution.Kind.Goal, new Vector3(10.5f, CliffTop, 15.5f));
         }
     }
 }

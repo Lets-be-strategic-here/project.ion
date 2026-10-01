@@ -104,6 +104,7 @@ namespace Ion.Levels
 
         void BuildRooms()
         {
+            int merged = 0;
             _worldContainer = new GameObject("World").transform;
             for (int i = 0; i < _rooms.Count; i++)
             {
@@ -122,7 +123,19 @@ namespace Ion.Levels
                 {
                     Debug.LogException(e);
                 }
+                try
+                {
+                    // Grass, flowers and paths, then one merged mesh per decor colour (world + diorama).
+                    Scatter.Decorate(ctx);
+                    merged += DecorCombiner.Combine(root);
+                    if (ctx.HasDiorama) merged += DecorCombiner.Combine(ctx.DioramaRoot);
+                }
+                catch (System.Exception e)
+                {
+                    Debug.LogException(e);
+                }
             }
+            Debug.Log("[Ion] Decor: merged " + merged + " renderers into per-room meshes.");
         }
 
         IEnumerator CaptureDioramas()
@@ -161,8 +174,15 @@ namespace Ion.Levels
 
             AnnounceRoom(0);
 
-            // Captured photos hold their own clipped meshes; the dioramas are no longer needed.
+            // Captured photos hold their own clipped meshes; the dioramas are no longer needed once the
+            // previews exist. When the render pipeline was not up yet at capture time (first frames of
+            // the Web player), ProjectionSystem renders the previews in a later LateUpdate, so keep the
+            // dioramas visible until it has; deactivating them earlier gave sky-only (blank) photos.
             yield return null;
+            for (int i = 0; i < 600 && ps != null && ps.PendingPreviewCount > 0; i++)
+                yield return null;
+            if (ps != null && ps.PendingPreviewCount > 0)
+                Debug.LogWarning("[GameBootstrap] Photo previews still pending; hiding the dioramas anyway.");
             if (_dioramaContainer != null) _dioramaContainer.gameObject.SetActive(false);
         }
 

@@ -1,0 +1,416 @@
+using System;
+using System.Globalization;
+using System.Text;
+using Ion.Gameplay;
+using Ion.Levels;
+using Ion.Projection;
+using UnityEngine;
+
+namespace Ion.DebugTools
+{
+    /// <summary>
+    /// Debug / automation harness. Installs itself after the first scene loads as a persistent GameObject
+    /// named exactly "IonDebug", so a web page can drive the game with
+    /// <c>unityInstance.SendMessage("IonDebug", "GoTo", "bridge:place")</c>. Every action goes through the
+    /// same components a player uses (FirstPersonController, PhotoHolder, InstantCamera, ProjectionSystem).
+    /// Each method takes one string (SendMessage contract) and is also callable from C# (PlayMode tests).
+    ///
+    ///   GoTo("room:spot")   room = 1-based number or name ("bridge", "stairs"...); spot = "spawn" (default)
+    ///                       or a <see cref="RoomSolution"/> name ("place", "snap", "far", "exit", ...).
+    ///                       Sets the current room, teleports the feet there and sets the solution view.
+    ///   Look("yaw,pitch")   degrees (yaw 0 = +Z, pitch positive = down).
+    ///   GiveAll("")         every pre-made photo into the inventory + unlocks the camera (3 film min).
+    ///   Select("i")         inventory index (0-based) or a label substring ("Bridge", "Snapshot").
+    ///   Raise("") / Lower("")   hold the selected photo up / put it down.
+    ///   Rotate("+1|-1")     ±90° roll steps (+1 = Q, -1 = E).
+    ///   Place("")           places the held photo (raises it first if needed).
+    ///   Rewind("")          undoes the last placement.
+    ///   Snap("")            instant-camera photo from the current view (camera must be unlocked).
+    ///   Walk("x,z,seconds") holds movement input (x = strafe right, z = forward, -1..1) for some seconds.
+    ///   WalkTo("x,z[,s]")   walks toward a point local to the current room (or WalkTo("far"): a spot name).
+    ///   State("")           logs "[IonDebug] {json}".
+    ///   Quality("-1|0|1|2") sets the quality preference (Auto / Low / Med / High).
+    ///   Spectate("x,y,z,yaw,pitch")  freezes the player and puts the camera at a room-local pose
+    ///                       (screenshots of islands from outside); Spectate("") hands it back.
+    ///   Place logs "[IonDebug] Place took N ms" (the whole cut + paste, measured around PhotoHolder.Place).
+    /// </summary>
+    [DisallowMultipleComponent]
+    public sealed class IonDebug : MonoBehaviour
+    {
+        public const string ObjectName = "IonDebug";
+
+        public static IonDebug Instance { get; private set; }
+
+        [RuntimeInitializeOnLoadMethod(RuntimeInitializeLoadType.SubsystemRegistration)]
+        static void ResetStatics() => Instance = null;
+
+        [RuntimeInitializeOnLoadMethod(RuntimeInitializeLoadType.AfterSceneLoad)]
+        static void Install() => Ensure();
+
+        /// <summary>Returns the harness, creating it if needed.</summary>
+        public static IonDebug Ensure()
+        {
+            if (Instance != null) return Instance;
+            var existing = FindFirstObjectByType<IonDebug>();
+            if (existing != null) return Instance = existing;
+            var go = new GameObject(ObjectName);
+            Instance = go.AddComponent<IonDebug>();
+            return Instance;
+        }
+
+        void Awake()
+        {
+            if (Instance != null && Instance != this)
+            {
+                Destroy(gameObject);
+                return;
+            }
+            Instance = this;
+            gameObject.name = ObjectName;
+            DontDestroyOnLoad(gameObject);
+        }
+
+        void OnDestroy()
+        {
+            if (Instance == this) Instance = null;
+        }
+
+        // ------------------------------------------------------------------ lookups
+
+        static GameBootstrap Game => GameBootstrap.Instance;
+        static FirstPersonController Player => Game != null && Game.Player != null ? Game.Player : FirstPersonController.Current;
+        static T PlayerComponent<T>() where T : Component => Player != null ? Player.GetComponent<T>() : null;
+
+        static readonly CultureInfo Inv = CultureInfo.InvariantCulture;
+
+        static float[] ParseFloats(string arg)
+        {
+            if (string.IsNullOrWhiteSpace(arg)) return Array.Empty<float>();
+            string[] parts = arg.Split(new[] { ',', ' ', ';' }, StringSplitOptions.RemoveEmptyEntries);
+            var result = new float[parts.Length];
+            for (int i = 0; i < parts.Length; i++)
+            {
+                if (!float.TryParse(parts[i], NumberStyles.Float, Inv, out result[i]))
+                    return null;
+            }
+            return result;
+        }
+
+        /// <summary>Room index (0-based) from "2" (1-based) or a name fragment; -1 if not found.</summary>
+        public static int FindRoom(string key)
+        {
+            var game = Game;
+            if (game == null) return -1;
+            key = (key ?? string.Empty).Trim();
+            if (key.Length == 0) return game.CurrentRoom;
+            if (int.TryParse(key, NumberStyles.Integer, Inv, out int n))
+                return n >= 1 && n <= game.Rooms.Count ? n - 1 : -1;
+            for (int i = 0; i < game.Rooms.Count; i++)
+            {
+                Room room = game.Rooms[i].Room;
+                if (room.Title.IndexOf(key, StringComparison.OrdinalIgnoreCase) >= 0 ||
+                    room.GetType().Name.IndexOf(key, StringComparison.OrdinalIgnoreCase) >= 0)
+                    return i;
+            }
+            return -1;
+        }
+
+        static void Log(string msg) => Debug.Log("[IonDebug] " + msg);
+        static void Warn(string msg) => Debug.LogWarning("[IonDebug] " + msg);
+
+        // ------------------------------------------------------------------ commands
+
+        /// <summary>"room:spot" — see the class summary. Returns false if the room/spot is unknown.</summary>
+        public void GoTo(string arg) => TryGoTo(arg);
+
+        public bool TryGoTo(string arg)
+        {
+            var game = Game;
+            var player = Player;
+            if (game == null || player == null) { Warn("GoTo: game not ready"); return false; }
+
+            string roomKey = arg ?? string.Empty, spot = "spawn";
+            int colon = roomKey.IndexOf(':');
+            if (colon >= 0)
+            {
+                spot = roomKey.Substring(colon + 1).Trim();
+                roomKey = roomKey.Substring(0, colon);
+            }
+            int index = FindRoom(roomKey);
+            if (index < 0) { Warn("GoTo: unknown room '" + roomKey + "'"); return false; }
+
+            RoomContext ctx = game.Rooms[index];
+            RoomSolution sol = null;
+            if (spot.Length > 0 && !spot.Equals("spawn", StringComparison.OrdinalIgnoreCase))
+            {
+                sol = ctx.Room.FindSolution(spot);
+                if (sol == null) { Warn("GoTo: room " + (index + 1) + " has no spot '" + spot + "'"); return false; }
+            }
+
+            game.GoToRoom(index); // current room, checkpoint and arrival toast, like a teleporter
+            if (sol != null)
+            {
+                player.Teleport(ctx.SolutionFeet(sol), ctx.SolutionYaw(sol));
+                player.SetLook(ctx.SolutionYaw(sol), sol.Pitch);
+            }
+            Physics.SyncTransforms();
+            Log("GoTo room " + (index + 1) + " spot '" + (sol != null ? sol.Name : "spawn") + "'");
+            return true;
+        }
+
+        public void Look(string arg)
+        {
+            float[] v = ParseFloats(arg);
+            var player = Player;
+            if (player == null || v == null || v.Length < 1) { Warn("Look: expected 'yaw,pitch'"); return; }
+            player.SetLook(v[0], v.Length > 1 ? v[1] : 0f);
+        }
+
+        /// <summary>Adds every captured pre-made photo to the inventory and unlocks the instant camera.</summary>
+        public void GiveAll(string arg)
+        {
+            var game = Game;
+            var inv = PlayerComponent<PhotoInventory>();
+            if (game == null || inv == null) { Warn("GiveAll: game not ready"); return; }
+            int added = 0;
+            for (int r = 0; r < game.Rooms.Count; r++)
+            {
+                RoomContext ctx = game.Rooms[r];
+                for (int s = 0; s < ctx.ShotCount; s++)
+                {
+                    PhotoData p = ctx.GetShotPhoto(s);
+                    if (p == null || inv.Contains(p)) continue;
+                    inv.Add(p);
+                    added++;
+                }
+            }
+            RoomContext.UnlockInstantCamera(3);
+            if (inv.Count > 0) inv.SelectedIndex = 0;
+            Log("GiveAll: +" + added + " photos, inventory " + inv.Count);
+        }
+
+        /// <summary>Selects by inventory index or label substring. Returns false if nothing matched.</summary>
+        public void Select(string arg) => TrySelect(arg);
+
+        public bool TrySelect(string arg)
+        {
+            var inv = PlayerComponent<PhotoInventory>();
+            if (inv == null || inv.Count == 0) { Warn("Select: inventory empty"); return false; }
+            arg = (arg ?? string.Empty).Trim();
+            if (int.TryParse(arg, NumberStyles.Integer, Inv, out int i))
+            {
+                if (i < 0 || i >= inv.Count) { Warn("Select: index out of range"); return false; }
+                inv.SelectedIndex = i;
+                return true;
+            }
+            // Last match wins, so "Snapshot" picks the newest snapshot.
+            int found = -1;
+            for (int k = 0; k < inv.Count; k++)
+            {
+                string label = inv.Photos[k].Label ?? string.Empty;
+                if (label.IndexOf(arg, StringComparison.OrdinalIgnoreCase) >= 0) found = k;
+            }
+            if (found < 0) { Warn("Select: no photo labelled '" + arg + "'"); return false; }
+            inv.SelectedIndex = found;
+            return true;
+        }
+
+        public void Raise(string arg)
+        {
+            var holder = PlayerComponent<PhotoHolder>();
+            if (holder == null || !holder.Raise()) Warn("Raise: nothing to raise");
+        }
+
+        public void Lower(string arg)
+        {
+            var holder = PlayerComponent<PhotoHolder>();
+            if (holder != null) holder.Lower();
+        }
+
+        public void Rotate(string arg)
+        {
+            var holder = PlayerComponent<PhotoHolder>();
+            if (holder == null) return;
+            float[] v = ParseFloats(arg);
+            float steps = v != null && v.Length > 0 ? v[0] : 1f;
+            holder.Rotate(90f * Mathf.Round(steps));
+        }
+
+        public void Place(string arg) => TryPlace();
+
+        public bool TryPlace()
+        {
+            var holder = PlayerComponent<PhotoHolder>();
+            if (holder == null) return false;
+            if (!holder.IsRaised && !holder.Raise()) { Warn("Place: nothing to place"); return false; }
+            var sw = System.Diagnostics.Stopwatch.StartNew();
+            bool ok = holder.Place();
+            sw.Stop();
+            Log("Place took " + sw.Elapsed.TotalMilliseconds.ToString("0.0", Inv) + " ms");
+            Physics.SyncTransforms();
+            if (!ok) Warn("Place: failed");
+            return ok;
+        }
+
+        public void Rewind(string arg)
+        {
+            var holder = PlayerComponent<PhotoHolder>();
+            if (holder != null) holder.Rewind();
+            Physics.SyncTransforms();
+        }
+
+        public void Snap(string arg) => TrySnap();
+
+        public PhotoData TrySnap()
+        {
+            var cam = PlayerComponent<InstantCamera>();
+            if (cam == null || !cam.Unlocked) { Warn("Snap: the instant camera is locked"); return null; }
+            var holder = PlayerComponent<PhotoHolder>();
+            if (holder != null) holder.Lower();
+            cam.SetCameraMode(true);
+            PhotoData photo = cam.TryCapture();
+            cam.SetCameraMode(false);
+            if (photo == null) Warn("Snap: no photo (film " + cam.Film + ")");
+            return photo;
+        }
+
+        public void Walk(string arg)
+        {
+            float[] v = ParseFloats(arg);
+            var player = Player;
+            if (player == null || v == null || v.Length < 3) { Warn("Walk: expected 'x,z,seconds'"); return; }
+            player.ScriptedWalk(new Vector2(v[0], v[1]), v[2]);
+        }
+
+        public void WalkTo(string arg)
+        {
+            var game = Game;
+            var player = Player;
+            if (game == null || player == null) return;
+            RoomContext ctx = game.Rooms[game.CurrentRoom];
+            float[] v = ParseFloats(arg);
+            Vector3 target;
+            float seconds = 15f;
+            if (v != null && v.Length >= 2)
+            {
+                target = ctx.WorldRoot.TransformPoint(new Vector3(v[0], 0f, v[1]));
+                if (v.Length >= 3) seconds = v[2];
+            }
+            else
+            {
+                RoomSolution sol = ctx.Room.FindSolution((arg ?? string.Empty).Trim());
+                if (sol == null) { Warn("WalkTo: expected 'x,z[,seconds]' or a spot name"); return; }
+                target = ctx.SolutionFeet(sol);
+            }
+            player.ScriptedWalkTo(target, seconds);
+        }
+
+        public void State(string arg) => Log(StateJson());
+
+        public void Quality(string arg)
+        {
+            if (!int.TryParse((arg ?? string.Empty).Trim(), NumberStyles.Integer, Inv, out int tier)) { Warn("Quality: expected -1..2"); return; }
+            Ion.Presentation.QualityTier.Set(tier);
+            Log("Quality " + Ion.Presentation.QualityTier.Name(Ion.Presentation.QualityTier.Preference) +
+                " -> tier " + Ion.Presentation.QualityTier.Name(Ion.Presentation.QualityTier.Current));
+        }
+
+        Transform _spectateCam;
+        Vector3 _spectateLocalPos;
+        Quaternion _spectateLocalRot;
+
+        public void Spectate(string arg)
+        {
+            var player = Player;
+            if (player == null || player.Camera == null) return;
+            float[] v = ParseFloats(arg);
+            if (v == null || v.Length < 3)
+            {
+                if (_spectateCam != null)
+                {
+                    _spectateCam.localPosition = _spectateLocalPos;
+                    _spectateCam.localRotation = _spectateLocalRot;
+                    _spectateCam = null;
+                    player.enabled = true;
+                }
+                return;
+            }
+            Transform cam = player.Camera.transform;
+            if (_spectateCam == null)
+            {
+                _spectateCam = cam;
+                _spectateLocalPos = cam.localPosition;
+                _spectateLocalRot = cam.localRotation;
+            }
+            player.enabled = false;
+            var game = Game;
+            Transform room = game != null ? game.Rooms[game.CurrentRoom].WorldRoot : null;
+            Vector3 pos = room != null ? room.TransformPoint(new Vector3(v[0], v[1], v[2])) : new Vector3(v[0], v[1], v[2]);
+            cam.SetPositionAndRotation(pos, Quaternion.Euler(v.Length > 4 ? v[4] : 0f, v.Length > 3 ? v[3] : 0f, 0f));
+        }
+
+        /// <summary>One-line JSON snapshot of the game state.</summary>
+        public static string StateJson()
+        {
+            var game = Game;
+            var player = Player;
+            var ps = ProjectionSystem.Instance;
+            var inv = PlayerComponent<PhotoInventory>();
+            var holder = PlayerComponent<PhotoHolder>();
+            var cam = PlayerComponent<InstantCamera>();
+
+            var sb = new StringBuilder(256);
+            sb.Append('{');
+            int room = game != null ? game.CurrentRoom : -1;
+            sb.Append("\"room\":").Append(room + 1);
+            if (game != null && room >= 0 && room < game.Rooms.Count)
+                sb.Append(",\"roomTitle\":\"").Append(Escape(game.Rooms[room].Room.Title)).Append('"');
+            if (player != null)
+            {
+                Vector3 p = player.transform.position;
+                sb.Append(",\"pos\":[").Append(F(p.x)).Append(',').Append(F(p.y)).Append(',').Append(F(p.z)).Append(']');
+                if (game != null && room >= 0 && room < game.Rooms.Count)
+                {
+                    Vector3 l = game.Rooms[room].WorldRoot.InverseTransformPoint(p);
+                    sb.Append(",\"local\":[").Append(F(l.x)).Append(',').Append(F(l.y)).Append(',').Append(F(l.z)).Append(']');
+                }
+                sb.Append(",\"yaw\":").Append(F(player.Yaw)).Append(",\"pitch\":").Append(F(player.Pitch));
+                sb.Append(",\"grounded\":").Append(player.IsGrounded ? "true" : "false");
+                sb.Append(",\"respawns\":").Append(player.RespawnCount);
+            }
+            if (inv != null)
+            {
+                sb.Append(",\"inventory\":").Append(inv.Count).Append(",\"selected\":").Append(inv.SelectedIndex);
+                sb.Append(",\"photos\":[");
+                for (int i = 0; i < inv.Count; i++)
+                {
+                    if (i > 0) sb.Append(',');
+                    sb.Append('"').Append(Escape(inv.Photos[i].Label)).Append('"');
+                }
+                sb.Append(']');
+            }
+            if (holder != null)
+                sb.Append(",\"raised\":").Append(holder.IsRaised ? "true" : "false").Append(",\"roll\":").Append(F(holder.RollDegrees));
+            if (cam != null)
+                sb.Append(",\"camera\":").Append(cam.Unlocked ? "true" : "false").Append(",\"film\":").Append(cam.Film);
+            if (ps != null)
+                sb.Append(",\"placements\":").Append(ps.PlacementCount).Append(",\"canRewind\":").Append(ps.CanRewind ? "true" : "false");
+            int renderers = 0;
+            foreach (MeshRenderer r in FindObjectsByType<MeshRenderer>(FindObjectsSortMode.None))
+                if (r.enabled && r.gameObject.activeInHierarchy) renderers++;
+            sb.Append(",\"renderers\":").Append(renderers);
+            sb.Append(",\"tier\":\"").Append(Ion.Presentation.QualityTier.Name(Ion.Presentation.QualityTier.Current)).Append('"');
+            sb.Append(",\"frameMs\":").Append(F(Ion.Presentation.Quality.AdaptiveQuality.SmoothedFrameMs));
+            sb.Append('}');
+            return sb.ToString();
+        }
+
+        static string F(float v) => v.ToString("0.###", Inv);
+
+        static string Escape(string s)
+        {
+            if (string.IsNullOrEmpty(s)) return string.Empty;
+            return s.Replace("\\", "\\\\").Replace("\"", "\\\"");
+        }
+    }
+}

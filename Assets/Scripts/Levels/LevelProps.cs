@@ -143,11 +143,28 @@ namespace Ion.Levels
     public static class LevelColors
     {
         public static readonly Color Grass = Palette.Grass;
-        public static readonly Color Dirt = Palette.Sand;
-        public static readonly Color Rock = Palette.Slate;
+        /// <summary>Overhanging grass lip on island edges: a touch deeper than the top.</summary>
+        public static readonly Color GrassLip = new Color32(0x8F, 0xC2, 0x70, 0xFF);
+        /// <summary>Island / ledge sides: warm clay-sand.</summary>
+        public static readonly Color Dirt = new Color32(0xEC, 0xD3, 0xAE, 0xFF);
+        public static readonly Color DirtBand = new Color32(0xDF, 0xBC, 0x95, 0xFF);
+        /// <summary>Island undersides (core + spikes): dusty mauve rock.</summary>
+        public static readonly Color Rock = new Color32(0xA6, 0x92, 0xA2, 0xFF);
+        public static readonly Color RockDark = new Color32(0x8E, 0x7D, 0x92, 0xFF);
+        /// <summary>Boulders on the grass: warm lilac-grey.</summary>
+        public static readonly Color Boulder = new Color32(0xC3, 0xBA, 0xC6, 0xFF);
+        public static readonly Color BoulderDark = new Color32(0xA9, 0xA0, 0xB2, 0xFF);
         public static readonly Color Leaves = Color.Lerp(Palette.Mint, Palette.Grass, 0.5f);
-        public static readonly Color LeavesDark = Color.Lerp(Palette.Grass, Palette.Slate, 0.25f);
+        public static readonly Color LeavesDark = new Color32(0x88, 0xB9, 0x7E, 0xFF);
         public static readonly Color Trunk = Palette.DarkWood;
+        public static readonly Color TuftLight = new Color32(0xBA, 0xDD, 0x8E, 0xFF);
+        public static readonly Color TuftDark = new Color32(0x8E, 0xC2, 0x70, 0xFF);
+        /// <summary>Contact shade under props (slightly darker, cooler grass).</summary>
+        public static readonly Color Contact = Palette.Grass; // radial gradient baked in Geo.DiscMesh
+        public static readonly Color PathStone = new Color32(0xDE, 0xD6, 0xC6, 0xFF);
+        /// <summary>Wall pilasters / piers: dusty lilac stone and a deeper cream.</summary>
+        public static readonly Color Pier = new Color32(0xB9, 0xAC, 0xC1, 0xFF);
+        public static readonly Color WallTrim = new Color32(0xFB, 0xEE, 0xD8, 0xFF);
         public static readonly Color Wall = Palette.Cream;
         public static readonly Color Trim = Palette.Coral;
         public static readonly Color Bridge = Palette.Wood;
@@ -155,5 +172,10 @@ namespace Ion.Levels
         public static readonly Color MarkerPhoto = Palette.Coral;
         public static readonly Color MarkerCamera = Palette.Lavender;
         public static readonly Color Cloud = Palette.White;
+        /// <summary>Flower bloom colours.</summary>
+        public static readonly Color[] Blooms =
+        {
+            Palette.Butter, Palette.Coral, Palette.Lavender, Palette.White, new Color32(0xF7, 0xB7, 0xC8, 0xFF),
+        };
     }
 }

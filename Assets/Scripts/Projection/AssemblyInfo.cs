@@ -1,4 +1,5 @@
 using System.Runtime.CompilerServices;
 
-// Lets the EditMode tests build PhotoData contents directly (PhotoPiece / PhotoEntity are internal).
+// Lets the tests build / inspect PhotoData contents directly (PhotoPiece / PhotoEntity are internal).
 [assembly: InternalsVisibleTo("Ion.Tests.EditMode")]
+[assembly: InternalsVisibleTo("Ion.Tests.PlayMode")]

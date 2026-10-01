@@ -15,14 +15,15 @@ namespace Ion.Presentation.Quality
     /// with back-off when an increase does not hold).
     /// Fixed tier: applies that tier's table at its base scale and does not adapt.
     ///
-    /// Tier tables (render scale / MSAA / shadow distance / sun shadows / shadow map):
-    ///   High 1.0 / 4x / 60 m / Soft / asset value;  Med 0.85 / 2x / 40 m / Hard / 1024;  Low 0.7 / 1x / 0 / None / 1024.
+    /// Tier tables (render scale / MSAA / shadow distance / sun shadows / shadow map / soft filter):
+    ///   High 1.0 / 4x / 40 m / Soft / asset value (2048) / Medium;  Med 0.85 / 2x / 30 m / Soft / 1024 / Low;
+    ///   Low 0.75 / 1x / 0 / None. Low relies on the baked contact shading (Kit.Contact, decor AO).
     ///
     /// Only public URP 17.3 setters are used: renderScale, msaaSampleCount, shadowDistance,
     /// mainLightShadowmapResolution. supportsMainLightShadows and supportsSoftShadows have internal
-    /// setters, so shadows are switched on the sun light instead (Light.shadows). "Soft" only renders
-    /// soft if the URP asset has Soft Shadows enabled (ProjectSetup currently disables it, so High
-    /// draws hard shadows). In the Editor the asset's original values are restored when play stops.
+    /// setters, so shadows are switched on the sun light instead (Light.shadows), and the soft filter
+    /// quality on its UniversalAdditionalLightData. The URP asset has Soft Shadows enabled.
+    /// In the Editor the asset's original values are restored when play stops.
     /// </summary>
     [DefaultExecutionOrder(-900)]
     [DisallowMultipleComponent]
@@ -35,13 +36,14 @@ namespace Ion.Presentation.Quality
             public float ShadowDistance;
             public LightShadows Shadows;
             public int ShadowRes; // 0 = keep the asset's own value
+            public SoftShadowQuality Soft;
         }
 
         static readonly TierSpec[] k_Tiers =
         {
-            new TierSpec { Scale = 0.7f, Msaa = 1, ShadowDistance = 0f, Shadows = LightShadows.None, ShadowRes = 1024 },
-            new TierSpec { Scale = 0.85f, Msaa = 2, ShadowDistance = 40f, Shadows = LightShadows.Hard, ShadowRes = 1024 },
-            new TierSpec { Scale = 1f, Msaa = 4, ShadowDistance = 60f, Shadows = LightShadows.Soft, ShadowRes = 0 },
+            new TierSpec { Scale = 0.75f, Msaa = 1, ShadowDistance = 0f, Shadows = LightShadows.None, ShadowRes = 1024, Soft = SoftShadowQuality.Low },
+            new TierSpec { Scale = 0.85f, Msaa = 2, ShadowDistance = 30f, Shadows = LightShadows.Soft, ShadowRes = 1024, Soft = SoftShadowQuality.Low },
+            new TierSpec { Scale = 1f, Msaa = 4, ShadowDistance = 40f, Shadows = LightShadows.Soft, ShadowRes = 0, Soft = SoftShadowQuality.Medium },
         };
 
         public const float MinRenderScale = 0.6f;
@@ -411,8 +413,11 @@ namespace Ion.Presentation.Quality
                 if (_sun == null) return;
             }
             // Re-applied every second: Atmosphere.Apply() resets the sun to Soft.
-            LightShadows want = k_Tiers[Mathf.Clamp(tier, 0, k_Tiers.Length - 1)].Shadows;
-            if (_sun.shadows != want) _sun.shadows = want;
+            TierSpec spec = k_Tiers[Mathf.Clamp(tier, 0, k_Tiers.Length - 1)];
+            if (_sun.shadows != spec.Shadows) _sun.shadows = spec.Shadows;
+            if (!_sun.TryGetComponent(out UniversalAdditionalLightData data))
+                data = _sun.gameObject.AddComponent<UniversalAdditionalLightData>();
+            if (data.softShadowQuality != spec.Soft) data.softShadowQuality = spec.Soft;
         }
     }
 }

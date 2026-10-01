@@ -34,6 +34,10 @@ namespace Ion.Levels
             ctx.CreateMarker(Marker, LevelColors.MarkerPhoto,
                 "Face the wall, look straight ahead and place the sky photo");
             ctx.CreateTeleporter(new Vector3(8.5f, 0f, 11.5f));
+
+            AddSolution("place", RoomSolution.Kind.Place, Marker, 0f, 0f, 0);
+            AddSolution("far", RoomSolution.Kind.Goal, new Vector3(0f, 0f, 14f));
+            AddSolution("exit", RoomSolution.Kind.Goal, new Vector3(8.5f, 0f, 11.5f));
         }
 
         static void BuildTerrain(Transform p)
@@ -55,8 +59,11 @@ namespace Ion.Levels
             Geo.Box(p, new Vector3(0f, 3.5f, 9f), new Vector3(24f, 7f, 1f), LevelColors.Wall).name = "Wall";
             Geo.Box(p, new Vector3(0f, 7.15f, 9f), new Vector3(24.6f, 0.3f, 1.4f), LevelColors.Trim).name = "WallCap";
             Geo.Box(p, new Vector3(0f, 0.2f, 9f), new Vector3(24.2f, 0.4f, 1.2f), Palette.Stone).name = "WallSkirt";
-            Geo.Box(p, new Vector3(-12.3f, 3.7f, 9f), new Vector3(0.8f, 7.4f, 1.8f), Palette.Slate).name = "WallPier";
-            Geo.Box(p, new Vector3(12.3f, 3.7f, 9f), new Vector3(0.8f, 7.4f, 1.8f), Palette.Slate).name = "WallPier";
+            Geo.Box(p, new Vector3(-12.3f, 3.7f, 9f), new Vector3(0.8f, 7.4f, 1.8f), LevelColors.Pier).name = "WallPier";
+            Geo.Box(p, new Vector3(12.3f, 3.7f, 9f), new Vector3(0.8f, 7.4f, 1.8f), LevelColors.Pier).name = "WallPier";
+            // Collider-less pilasters on both faces break up the long plain wall (cut with it by a photo).
+            for (int i = -2; i <= 2; i++)
+                Kit.Pilaster(p, new Vector3(i * 4.6f, 0.4f, 9f), 6.6f, 1f, LevelColors.WallTrim);
         }
     }
 }

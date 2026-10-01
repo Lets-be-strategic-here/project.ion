@@ -81,6 +81,13 @@ namespace Ion.Gameplay
         float _checkpointYaw;
         float _nextCheckpointScan;
 
+        // Automation (debug harness / tests): movement input injected instead of the keyboard.
+        Vector2 _scriptedInput;
+        float _scriptedUntil = -1f;
+        bool _scriptedHasTarget;
+        Vector3 _scriptedTarget;
+        float _scriptedArriveRadius;
+
         public Camera Camera => _camera;
 
         /// <summary>When false, movement/look/actions are ignored (gravity still applies).</summary>
@@ -103,6 +110,51 @@ namespace Ion.Gameplay
 
         /// <summary>Fired after the player falls out of the world and is put back at the checkpoint.</summary>
         public event System.Action Respawned;
+
+        /// <summary>Number of times the player fell out of the world and was respawned.</summary>
+        public int RespawnCount { get; private set; }
+
+        /// <summary>True while a <see cref="ScriptedWalk"/> / <see cref="ScriptedWalkTo"/> is in progress.</summary>
+        public bool IsScriptedWalking => Time.time < _scriptedUntil;
+
+        /// <summary>
+        /// Automation: holds movement input (x = strafe right, y = forward, each in [-1, 1]) for
+        /// <paramref name="seconds"/>, exactly as if the keys were held. Ignores InputEnabled.
+        /// </summary>
+        public void ScriptedWalk(Vector2 input, float seconds)
+        {
+            _scriptedInput = Vector2.ClampMagnitude(input, 1f);
+            _scriptedHasTarget = false;
+            _scriptedUntil = Time.time + Mathf.Max(0f, seconds);
+        }
+
+        /// <summary>
+        /// Automation: walks forward toward the world point <paramref name="worldTarget"/> (XZ only),
+        /// turning the view toward it every frame, until within <paramref name="arriveRadius"/> or
+        /// <paramref name="maxSeconds"/> elapse.
+        /// </summary>
+        public void ScriptedWalkTo(Vector3 worldTarget, float maxSeconds, float arriveRadius = 0.3f)
+        {
+            _scriptedTarget = worldTarget;
+            _scriptedHasTarget = true;
+            _scriptedArriveRadius = Mathf.Max(0.05f, arriveRadius);
+            _scriptedInput = new Vector2(0f, 1f);
+            _scriptedUntil = Time.time + Mathf.Max(0f, maxSeconds);
+        }
+
+        public void StopScriptedWalk()
+        {
+            _scriptedUntil = -1f;
+            _scriptedHasTarget = false;
+        }
+
+        /// <summary>Sets the view (yaw in degrees, pitch in degrees, positive = looking down).</summary>
+        public void SetLook(float yaw, float pitch)
+        {
+            _yaw = Mathf.Repeat(yaw, 360f);
+            _pitch = Mathf.Clamp(pitch, -MaxPitch, MaxPitch);
+            ApplyRotation();
+        }
 
         void Awake()
         {
@@ -210,6 +262,26 @@ namespace Ion.Gameplay
                 sprint = kb.leftShiftKey.isPressed;
                 if (kb.spaceKey.wasPressedThisFrame) _jumpPressedTime = now;
             }
+            if (Time.time < _scriptedUntil)
+            {
+                input = _scriptedInput;
+                sprint = false;
+                if (_scriptedHasTarget)
+                {
+                    Vector3 to = _scriptedTarget - transform.position;
+                    to.y = 0f;
+                    if (to.magnitude <= _scriptedArriveRadius)
+                    {
+                        StopScriptedWalk();
+                        input = Vector2.zero;
+                    }
+                    else
+                    {
+                        _yaw = Mathf.Repeat(Mathf.Atan2(to.x, to.z) * Mathf.Rad2Deg, 360f);
+                        ApplyRotation();
+                    }
+                }
+            }
             if (input.sqrMagnitude > 1f) input.Normalize();
 
             float speed = sprint ? SprintSpeed : WalkSpeed;
@@ -284,6 +356,7 @@ namespace Ion.Gameplay
         public void Respawn()
         {
             Teleport(_checkpointPosition, _checkpointYaw);
+            RespawnCount++;
             GameplayUI.Toast("Whoops - back to the last checkpoint");
             Respawned?.Invoke();
         }
@@ -299,6 +372,7 @@ namespace Ion.Gameplay
             ApplyRotation();
             _horizontalVelocity = Vector3.zero;
             _verticalVelocity = 0f;
+            StopScriptedWalk();
             if (_cc != null) _cc.enabled = true;
         }
     }

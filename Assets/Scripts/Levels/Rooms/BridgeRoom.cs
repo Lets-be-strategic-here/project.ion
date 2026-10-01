@@ -36,6 +36,10 @@ namespace Ion.Levels
                 "Look straight ahead, hold RMB to raise the photo, LMB to place.  R rewinds");
             ctx.CreateHint(new Vector3(0f, 0f, 5.2f), 1.5f, "Too far to jump... maybe the photo can help?", 3.5f).Once = true;
             ctx.CreateTeleporter(new Vector3(13f, 0f, 15f));
+
+            AddSolution("place", RoomSolution.Kind.Place, Marker, 0f, 0f, 0);
+            AddSolution("far", RoomSolution.Kind.Goal, new Vector3(0f, 0f, 17f));
+            AddSolution("exit", RoomSolution.Kind.Goal, new Vector3(13f, 0f, 15f));
         }
 
         static void BuildTerrain(Transform p)

@@ -18,6 +18,9 @@ namespace Ion.Gameplay
         {
             public PhotoData Photo; // null = a placement made by someone else (nothing to give back)
             public int Index;
+            public bool HasPose;     // where the player stood when placing (rewind fallback)
+            public Vector3 Feet;
+            public float Yaw;
         }
 
         public float ScrollCooldown = 0.08f;
@@ -88,6 +91,12 @@ namespace Ion.Gameplay
             _subscribed = null;
         }
 
+        /// <summary>
+        /// Automation (debug harness / tests): keeps the selected photo raised as if RMB were held.
+        /// Cleared by placing, lowering or disabling input.
+        /// </summary>
+        public bool AutomationRaise { get; set; }
+
         void Update()
         {
             EnsureSubscribed();
@@ -96,31 +105,27 @@ namespace Ion.Gameplay
             var kb = Keyboard.current;
             var mouse = Mouse.current;
 
-            if ((_fpc != null && !_fpc.InputEnabled) || kb == null || mouse == null)
+            if (_fpc != null && !_fpc.InputEnabled)
             {
+                AutomationRaise = false;
                 SetRaised(false);
                 return;
             }
 
-            HandleSelection(kb, mouse);
+            bool devices = kb != null && mouse != null;
+            if (devices) HandleSelection(kb, mouse);
 
-            // A new selection starts upright.
-            var selected = _inventory.Selected;
-            if (selected != _rollPhoto)
-            {
-                _rollPhoto = selected;
-                RollDegrees = 0f;
-            }
+            SyncRoll();
 
-            if (kb.rKey.wasPressedThisFrame)
+            if (devices && kb.rKey.wasPressedThisFrame)
                 TryRewind();
 
             bool locked = Cursor.lockState == CursorLockMode.Locked;
             bool cameraBusy = _instantCamera != null && _instantCamera.IsCameraMode;
-            bool rmb = mouse.rightButton.isPressed;
+            bool rmb = devices && mouse.rightButton.isPressed;
             if (!rmb) _waitForRmbRelease = false;
-            bool wantRaise = locked && !cameraBusy && rmb && !_waitForRmbRelease && _inventory.Selected != null;
-            SetRaised(wantRaise);
+            bool held = AutomationRaise || (locked && rmb && !_waitForRmbRelease);
+            SetRaised(held && !cameraBusy && _inventory.Selected != null);
 
             if (!IsRaised) return;
 
@@ -130,11 +135,62 @@ namespace Ion.Gameplay
                 RefreshOverlay();
             }
 
+            if (!devices) return;
             if (kb.qKey.wasPressedThisFrame) Rotate(90f);
             if (kb.eKey.wasPressedThisFrame) Rotate(-90f);
 
             if (mouse.leftButton.wasPressedThisFrame)
                 PlaceSelected();
+        }
+
+        /// <summary>A new selection starts upright.</summary>
+        void SyncRoll()
+        {
+            var selected = _inventory.Selected;
+            if (selected != _rollPhoto)
+            {
+                _rollPhoto = selected;
+                RollDegrees = 0f;
+            }
+        }
+
+        /// <summary>Raises the selected photo now (automation; same state as holding RMB). False if nothing to raise.</summary>
+        public bool Raise()
+        {
+            if (_inventory.Selected == null) return false;
+            if (_instantCamera != null && _instantCamera.IsCameraMode) _instantCamera.SetCameraMode(false);
+            SyncRoll();
+            AutomationRaise = true;
+            SetRaised(true);
+            return IsRaised;
+        }
+
+        /// <summary>Lowers the photo (automation; same as releasing RMB).</summary>
+        public void Lower()
+        {
+            AutomationRaise = false;
+            SetRaised(false);
+        }
+
+        /// <summary>
+        /// Places the raised photo (what LMB does while holding a photo up). Returns false if no photo is
+        /// raised or the placement could not be made.
+        /// </summary>
+        public bool Place()
+        {
+            if (!IsRaised || _inventory.Selected == null) return false;
+            int before = _inventory.Count;
+            PlaceSelected();
+            return _inventory.Count < before;
+        }
+
+        /// <summary>Rewinds the last placement (what R does). Returns false if there was nothing to rewind.</summary>
+        public bool Rewind()
+        {
+            var ps = ProjectionSystem.Instance;
+            bool could = ps != null && ps.CanRewind;
+            TryRewind();
+            return could;
         }
 
         void HandleSelection(Keyboard kb, Mouse mouse)
@@ -159,8 +215,10 @@ namespace Ion.Gameplay
             }
         }
 
-        void Rotate(float degrees)
+        /// <summary>Rotates the held photo by <paramref name="degrees"/> (Q = +90, E = −90).</summary>
+        public void Rotate(float degrees)
         {
+            SyncRoll();
             RollDegrees = Mathf.Repeat(RollDegrees + degrees, 360f);
             if (RollDegrees > 359.5f) RollDegrees = 0f;
             RefreshOverlay();
@@ -209,6 +267,7 @@ namespace Ion.Gameplay
             float roll = RollDegrees;
             // The pre-made photos are taken level; forgive a slightly tilted view.
             _fpc.SnapPitchLevel(LevelSnapDegrees);
+            AutomationRaise = false;
             SetRaised(false);
             _waitForRmbRelease = true;
 
@@ -232,7 +291,14 @@ namespace Ion.Gameplay
 
         void Consume(PhotoData photo, int index)
         {
-            _consumed.Push(new Consumed { Photo = photo, Index = index });
+            _consumed.Push(new Consumed
+            {
+                Photo = photo,
+                Index = index,
+                HasPose = _fpc != null,
+                Feet = transform.position,
+                Yaw = _fpc != null ? _fpc.Yaw : 0f,
+            });
             _inventory.Remove(photo);
         }
 
@@ -261,6 +327,55 @@ namespace Ion.Gameplay
             var c = _consumed.Pop();
             if (c.Photo != null && !_inventory.Contains(c.Photo))
                 _inventory.Insert(c.Index, c.Photo);
+
+            // The rewound geometry may have been what the player stood on (mid-bridge, in a pasted pit)
+            // or the restored world may now enclose them (standing in a cut doorway). Then put them back
+            // where they placed the photo from, which was solid ground before the placement.
+            if (c.HasPose && _fpc != null && !IsSafeStandingSpot(transform.position))
+                _fpc.Teleport(c.Feet, c.Yaw);
+        }
+
+        const int WorldQueryMask = ~ProjectionSystem.ExcludedLayerMask;
+
+        /// <summary>
+        /// True if a standing player at <paramref name="feet"/> has ground within reach below and is
+        /// neither intersecting nor enclosed by world geometry.
+        /// </summary>
+        static bool IsSafeStandingSpot(Vector3 feet)
+        {
+            Physics.SyncTransforms();
+            const QueryTriggerInteraction ignore = QueryTriggerInteraction.Ignore;
+            float r = PlayerFactory.Radius * 0.85f;
+
+            // Ground below (generous, so a jump in progress over solid ground counts as safe).
+            if (!Physics.SphereCast(feet + Vector3.up * 1f, r, Vector3.down, out _, 4f, WorldQueryMask, ignore))
+                return false;
+
+            // Intersecting surfaces (above the step offset).
+            Vector3 lo = feet + Vector3.up * (PlayerFactory.Radius + 0.45f);
+            Vector3 hi = feet + Vector3.up * (PlayerFactory.Height - PlayerFactory.Radius);
+            if (Physics.CheckCapsule(lo, hi, r, WorldQueryMask, ignore))
+                return false;
+
+            // Enclosed: from inside a closed mesh the first surface hit in any direction is a back face.
+            bool backfaces = Physics.queriesHitBackfaces;
+            Physics.queriesHitBackfaces = true;
+            try
+            {
+                Vector3 chest = feet + Vector3.up * 1f;
+                Vector3[] dirs = { Vector3.up, Vector3.right, Vector3.forward };
+                for (int i = 0; i < dirs.Length; i++)
+                {
+                    if (Physics.Raycast(chest, dirs[i], out RaycastHit hit, 60f, WorldQueryMask, ignore) &&
+                        Vector3.Dot(hit.normal, dirs[i]) > 0f)
+                        return false;
+                }
+            }
+            finally
+            {
+                Physics.queriesHitBackfaces = backfaces;
+            }
+            return true;
         }
 
         void TryRewind()

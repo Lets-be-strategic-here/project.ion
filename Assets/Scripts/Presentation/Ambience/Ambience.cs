@@ -119,6 +119,9 @@ namespace Ion.Presentation
         {
             SetSway(Palette.Get(Ion.Levels.LevelColors.Leaves), s_SwayAmount, 1.25f, -0.5f);
             SetSway(Palette.Get(Ion.Levels.LevelColors.LeavesDark), s_SwayAmount * 0.85f, 1.05f, -0.5f);
+            // Kit.Tree canopies are merged per room (DecorCombiner): the sway weight lives in vertex alpha.
+            Palette.Get(Ion.Levels.LevelColors.Leaves).SetFloat(SwayFromColorId, 1f);
+            Palette.Get(Ion.Levels.LevelColors.LeavesDark).SetFloat(SwayFromColorId, 1f);
         }
 
         static void SetSway(Material m, float amount, float freq, float anchorY)
@@ -128,6 +131,8 @@ namespace Ion.Presentation
             if (m.HasProperty(SwayFreqId)) m.SetFloat(SwayFreqId, freq);
             if (m.HasProperty(SwayAnchorId)) m.SetFloat(SwayAnchorId, anchorY);
         }
+
+        static readonly int SwayFromColorId = Shader.PropertyToID("_SwayFromColor");
 
         static readonly Dictionary<Material, Material> s_SwayClones = new Dictionary<Material, Material>();
 

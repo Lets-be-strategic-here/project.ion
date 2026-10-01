@@ -8,24 +8,32 @@
 //  * soft 3-band ramp (smoothstep edges), blue-slate shadow tint, faint sky-coloured rim light,
 //    no specular
 //  * optional foliage sway (_Sway > 0): world-position-phased horizontal offset scaled by the
-//    vertex's object-space height above _SwayAnchorY. Applied identically in every pass so depth,
-//    shadows and colour stay in sync. Global kill switches via _IonToonParams (Ambience).
+//    vertex's object-space height above _SwayAnchorY, or (when _SwayFromColor = 1, merged decor) by
+//    the vertex colour's alpha. Applied identically in every pass so depth, shadows and colour stay in
+//    sync. Global kill switches via _IonToonParams (Ambience).
+//  * vertex colour RGB multiplies the albedo (white for plain Geo meshes; merged decor bakes a
+//    per-instance tint and contact shading into it; the slicer carries it through cuts)
+//  * per-face colour jitter hashed from the flat normal (_FaceJitter) and, for grass (_GroundVar),
+//    a soft world-space colour drift plus faint triangular facets that fade with distance
 Shader "Ion/FlatToon"
 {
     Properties
     {
         _BaseColor ("Base Color", Color) = (1, 1, 1, 1)
-        _ShadowTint ("Shadow Tint (blue-slate)", Color) = (0.66, 0.73, 0.88, 1)
+        _ShadowTint ("Shadow Tint (blue-lilac)", Color) = (0.73, 0.73, 0.84, 1)
         _RampSmooth ("Ramp Edge Softness", Range(0.001, 0.2)) = 0.06
         _MidBand ("Mid Band Level", Range(0, 1)) = 0.55
         _LitStrength ("Direct Light Strength", Range(0, 2)) = 0.65
-        _LitAmbient ("Ambient On Lit Side", Range(0, 1)) = 0.5
+        _LitAmbient ("Ambient On Lit Side", Range(0, 1)) = 0.42
         _RimStrength ("Rim Strength", Range(0, 1)) = 0.22
         _RimPower ("Rim Power", Range(1, 8)) = 3
         [HDR] _EmissionColor ("Emission", Color) = (0, 0, 0, 1)
         _Sway ("Sway Amount (m at height 1)", Float) = 0
         _SwayFreq ("Sway Frequency", Float) = 1.3
         _SwayAnchorY ("Sway Anchor (object-space Y)", Float) = -0.5
+        _SwayFromColor ("Sway Weight From Vertex Alpha", Float) = 0
+        _FaceJitter ("Per-face Colour Jitter", Range(0, 0.2)) = 0.035
+        _GroundVar ("Ground Colour Variation", Range(0, 1)) = 0
     }
 
     SubShader
@@ -56,6 +64,9 @@ Shader "Ion/FlatToon"
             float _Sway;
             float _SwayFreq;
             float _SwayAnchorY;
+            float _SwayFromColor;
+            half _FaceJitter;
+            half _GroundVar;
         CBUFFER_END
 
         // Global look switches, set by Ion.Presentation.Ambience:
@@ -63,13 +74,14 @@ Shader "Ion/FlatToon"
         float4 _IonToonParams;
 
         // Object -> world with optional foliage sway. Cheap uniform branch when _Sway == 0.
-        float3 IonObjectToWorld(float3 positionOS)
+        // swayWeight = vertex colour alpha (used when _SwayFromColor = 1: merged decor, 0 at the trunk).
+        float3 IonObjectToWorld(float3 positionOS, float swayWeight)
         {
             float3 positionWS = TransformObjectToWorld(positionOS);
             float amount = _Sway * (_IonToonParams.z > 0.5 ? _IonToonParams.y : 1.0);
             if (amount > 0.0)
             {
-                float h = max(0.0, positionOS.y - _SwayAnchorY);
+                float h = _SwayFromColor > 0.5 ? swayWeight * 1.4 : max(0.0, positionOS.y - _SwayAnchorY);
                 float t = _Time.y * _SwayFreq;
                 // Phase from the (unswayed) world position: coherent across cut / photo pieces and
                 // between the split (flat-shaded) vertices of a face, so no cracks appear.
@@ -116,6 +128,7 @@ Shader "Ion/FlatToon"
             {
                 float4 positionOS : POSITION;
                 float3 normalOS   : NORMAL;
+                half4  color      : COLOR;
                 UNITY_VERTEX_INPUT_INSTANCE_ID
             };
 
@@ -123,8 +136,9 @@ Shader "Ion/FlatToon"
             {
                 float4 positionCS : SV_POSITION;
                 float3 positionWS : TEXCOORD0;
-                half3  normalWS   : TEXCOORD1;
+                float3 normalWS   : TEXCOORD1;
                 half   fogFactor  : TEXCOORD2;
+                half3  color      : TEXCOORD3;
                 UNITY_VERTEX_INPUT_INSTANCE_ID
                 UNITY_VERTEX_OUTPUT_STEREO
             };
@@ -136,14 +150,62 @@ Shader "Ion/FlatToon"
                 UNITY_TRANSFER_INSTANCE_ID(input, output);
                 UNITY_INITIALIZE_VERTEX_OUTPUT_STEREO(output);
 
-                float3 positionWS = IonObjectToWorld(input.positionOS.xyz);
+                float3 positionWS = IonObjectToWorld(input.positionOS.xyz, input.color.a);
                 float4 positionCS = TransformWorldToHClip(positionWS);
 
                 output.positionCS = positionCS;
                 output.positionWS = positionWS;
                 output.normalWS = TransformObjectToWorldNormal(input.normalOS);
                 output.fogFactor = ComputeFogFactor(positionCS.z);
+                output.color = input.color.rgb;
                 return output;
+            }
+
+            float IonHash12(float2 p)
+            {
+                float3 p3 = frac(float3(p.xyx) * 0.1031);
+                p3 += dot(p3, p3.yzx + 33.33);
+                return frac((p3.x + p3.y) * p3.z);
+            }
+
+            float IonValueNoise(float2 p)
+            {
+                float2 i = floor(p);
+                float2 f = frac(p);
+                float2 u = f * f * (3.0 - 2.0 * f);
+                float a = IonHash12(i), b = IonHash12(i + float2(1, 0));
+                float c = IonHash12(i + float2(0, 1)), d = IonHash12(i + float2(1, 1));
+                return lerp(lerp(a, b, u.x), lerp(c, d, u.x), u.y);
+            }
+
+            // Albedo dressing: per-face jitter (flat normals -> one value per face; continuous in the
+            // normal, so it is stable across a face) and grass colour drift + faint triangular facets.
+            half3 IonDressAlbedo(half3 albedo, float3 n, float3 positionWS)
+            {
+                float j = sin(dot(n, float3(17.3, 31.7, 23.1))) * 0.6 + sin(dot(n, float3(-29.1, 13.9, 41.3))) * 0.4;
+                albedo *= 1.0h + _FaceJitter * (half)j;
+
+                if (_GroundVar > 0.001h)
+                {
+                    half up = smoothstep(0.6h, 0.95h, (half)n.y) * _GroundVar;
+                    float2 wp = positionWS.xz;
+                    half macro = (half)(IonValueNoise(wp * 0.075) * 0.65 + IonValueNoise(wp * 0.21 + 17.0) * 0.35);
+                    macro = smoothstep(0.2h, 0.8h, macro);
+                    // Triangular lattice (skewed grid split along the diagonal), ~2.4 m cells.
+                    float2 q = wp * 0.42;
+                    float2 sk = float2(q.x + q.y * 0.57735, q.y * 1.1547);
+                    float2 cell = floor(sk);
+                    float2 f = frac(sk);
+                    float tri = step(f.y, f.x);
+                    half facet = (half)IonHash12(cell * 2.0 + tri * 7.3) - 0.5h;
+                    half dist = (half)distance(positionWS, GetCameraPositionWS());
+                    half facetFade = 1.0h - saturate((dist - 14.0h) / 22.0h);
+                    half3 cool = half3(0.92h, 0.99h, 1.03h);
+                    half3 warm = half3(1.07h, 1.03h, 0.84h);
+                    half3 tint = lerp(cool, warm, macro) * (1.0h + facet * 0.05h * facetFade);
+                    albedo *= lerp(half3(1.0h, 1.0h, 1.0h), tint, up);
+                }
+                return albedo;
             }
 
             half3 GradientAmbient(half3 n)
@@ -165,7 +227,8 @@ Shader "Ion/FlatToon"
                 UNITY_SETUP_INSTANCE_ID(input);
                 UNITY_SETUP_STEREO_EYE_INDEX_POST_VERTEX(input);
 
-                half3 n = normalize(input.normalWS);
+                float3 nF = normalize(input.normalWS);
+                half3 n = (half3)nF;
 
                 float4 shadowCoord = TransformWorldToShadowCoord(input.positionWS);
                 Light mainLight = GetMainLight();
@@ -184,11 +247,12 @@ Shader "Ion/FlatToon"
                 half band = _MidBand * smoothstep(0.08h - s, 0.08h + s, lightTerm)
                           + (1.0h - _MidBand) * smoothstep(0.45h - s, 0.45h + s, lightTerm);
 
-                half3 albedo = _BaseColor.rgb;
+                half3 albedo = IonDressAlbedo(_BaseColor.rgb * input.color, nF, input.positionWS);
                 half3 ambient = GradientAmbient(n);
 
-                // Shade side: ambient tinted towards blue-slate (no black shadows).
-                half3 shadeLight = ambient * _ShadowTint.rgb;
+                // Shade side: a soft blue-lilac (never black), only gently following the ambient
+                // direction so cast shadows stay airy rather than dark teal.
+                half3 shadeLight = _ShadowTint.rgb * (0.72h + 0.28h * ambient);
                 half3 litLight = ambient * _LitAmbient + mainLight.color * _LitStrength;
                 half3 color = albedo * lerp(shadeLight, litLight, band);
 
@@ -200,8 +264,9 @@ Shader "Ion/FlatToon"
                     half3 v = normalize(GetWorldSpaceViewDir(input.positionWS));
                     half fres = pow(1.0h - saturate(dot(n, v)), _RimPower);
                     half3 skyCol = dot(_IonAmbientSky.rgb, half3(1, 1, 1)) > 0.0001h ? (half3)_IonAmbientSky.rgb : SampleSH(half3(0, 1, 0));
-                    // Less on up-facing faces so distant ground at grazing angles is not washed out.
-                    half facing = 1.0h - 0.7h * saturate(n.y);
+                    // Less on up- and down-facing faces: distant ground at grazing angles is not washed
+                    // out and canopy undersides do not light up as a pale ring.
+                    half facing = 1.0h - 0.75h * abs(n.y);
                     color += skyCol * (fres * rimAmount * facing * (1.0h - 0.6h * band));
                 }
 
@@ -254,6 +319,7 @@ Shader "Ion/FlatToon"
             {
                 float4 positionOS : POSITION;
                 float3 normalOS   : NORMAL;
+                half4  color      : COLOR;
                 UNITY_VERTEX_INPUT_INSTANCE_ID
             };
 
@@ -267,7 +333,7 @@ Shader "Ion/FlatToon"
                 Varyings output;
                 UNITY_SETUP_INSTANCE_ID(input);
 
-                float3 positionWS = IonObjectToWorld(input.positionOS.xyz);
+                float3 positionWS = IonObjectToWorld(input.positionOS.xyz, input.color.a);
                 float3 normalWS = TransformObjectToWorldNormal(input.normalOS);
 
                 #if defined(_CASTING_PUNCTUAL_LIGHT_SHADOW)
@@ -312,6 +378,7 @@ Shader "Ion/FlatToon"
             struct Attributes
             {
                 float4 positionOS : POSITION;
+                half4  color      : COLOR;
                 UNITY_VERTEX_INPUT_INSTANCE_ID
             };
 
@@ -326,7 +393,7 @@ Shader "Ion/FlatToon"
                 Varyings output = (Varyings)0;
                 UNITY_SETUP_INSTANCE_ID(input);
                 UNITY_INITIALIZE_VERTEX_OUTPUT_STEREO(output);
-                output.positionCS = TransformWorldToHClip(IonObjectToWorld(input.positionOS.xyz));
+                output.positionCS = TransformWorldToHClip(IonObjectToWorld(input.positionOS.xyz, input.color.a));
                 return output;
             }
 
@@ -357,6 +424,7 @@ Shader "Ion/FlatToon"
             {
                 float4 positionOS : POSITION;
                 float3 normalOS   : NORMAL;
+                half4  color      : COLOR;
                 UNITY_VERTEX_INPUT_INSTANCE_ID
             };
 
@@ -372,7 +440,7 @@ Shader "Ion/FlatToon"
                 Varyings output = (Varyings)0;
                 UNITY_SETUP_INSTANCE_ID(input);
                 UNITY_INITIALIZE_VERTEX_OUTPUT_STEREO(output);
-                output.positionCS = TransformWorldToHClip(IonObjectToWorld(input.positionOS.xyz));
+                output.positionCS = TransformWorldToHClip(IonObjectToWorld(input.positionOS.xyz, input.color.a));
                 output.normalWS = TransformObjectToWorldNormal(input.normalOS);
                 return output;
             }

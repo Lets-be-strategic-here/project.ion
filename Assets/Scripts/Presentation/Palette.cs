@@ -40,6 +40,12 @@ namespace Ion.Presentation
         static readonly int BaseColorId = Shader.PropertyToID("_BaseColor");
         static readonly int ColorId = Shader.PropertyToID("_Color");
         static readonly int EmissionId = Shader.PropertyToID("_EmissionColor");
+        static readonly int GroundVarId = Shader.PropertyToID("_GroundVar");
+
+        /// <summary>Contact-shade colour under props (kept in sync with LevelColors.Contact).</summary>
+        public static readonly Color ContactShade = new Color32(0x8A, 0xB8, 0x76, 0xFF);
+
+        static bool SameColor(Color a, Color b) => Key(a) == Key(b);
 
         /// <summary>Shared (cached) toon material for a colour. Do not modify the returned material.</summary>
         public static Material Get(Color c)
@@ -108,6 +114,9 @@ namespace Ion.Presentation
             var mat = new Material(ToonShader) { name = name, enableInstancing = true };
             if (mat.HasProperty(BaseColorId)) mat.SetColor(BaseColorId, c);
             if (mat.HasProperty(ColorId)) mat.SetColor(ColorId, c);
+            // Grass (and the contact shade on it) drifts in colour across the ground.
+            if (mat.HasProperty(GroundVarId) && (SameColor(c, Grass) || SameColor(c, ContactShade)))
+                mat.SetFloat(GroundVarId, 1f);
             return mat;
         }
     }

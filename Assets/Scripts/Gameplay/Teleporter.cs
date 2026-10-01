@@ -88,10 +88,14 @@ namespace Ion.Gameplay
             }
         }
 
+        /// <summary>How many times the teleporter has fired (debug / tests).</summary>
+        public int FireCount { get; private set; }
+
         void Fire()
         {
             if (Time.time < _cooldownUntil) return;
             _cooldownUntil = Time.time + Cooldown;
+            FireCount++;
             OnEnter?.Invoke();
         }
     }

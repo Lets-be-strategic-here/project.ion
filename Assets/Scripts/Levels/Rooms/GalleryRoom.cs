@@ -21,7 +21,7 @@ namespace Ion.Levels
             Kit.Island(root, -12f, 12f, -10f, 26f, 0f, 51);
 
             // Paved path.
-            Geo.Box(root, new Vector3(0f, 0.02f, 8f), new Vector3(4f, 0.04f, 30f), Palette.Stone).name = "Path";
+            Geo.Box(root, new Vector3(0f, 0.02f, 8f), new Vector3(4f, 0.04f, 30f), LevelColors.PathStone).name = "Path";
 
             int n = 0;
             for (int side = -1; side <= 1; side += 2)
@@ -66,6 +66,8 @@ namespace Ion.Levels
 
             ctx.SetSpawn(new Vector3(0f, 0f, -6f));
             ctx.CreateHint(new Vector3(0f, 0f, 8f), 3f, "These frames will hold real projects soon.", 3.5f).Once = true;
+
+            AddSolution("exit", RoomSolution.Kind.Goal, new Vector3(0f, 0f, 21f));
 
             var spawn = ctx.Spawn;
             ctx.CreateTeleporter(new Vector3(0f, 0f, 21f), () =>

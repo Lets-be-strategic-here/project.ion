@@ -131,29 +131,34 @@ namespace Ion.Gameplay
             Changed?.Invoke();
         }
 
-        void TryCapture()
+        /// <summary>
+        /// Takes a photo from the player camera right now (what LMB does with the viewfinder up):
+        /// costs one film, adds the photo to the inventory. Returns null if out of film / not possible.
+        /// </summary>
+        public PhotoData TryCapture()
         {
             if (_film <= 0)
             {
                 GameplayUI.Toast("Out of film");
-                return;
+                return null;
             }
 
             var ps = ProjectionSystem.Instance;
             var cam = _fpc != null ? _fpc.Camera : null;
-            if (ps == null || cam == null) return;
+            if (ps == null || cam == null) return null;
 
             // Same level-view assist as placing, so a snapshot and its paste line up.
             _fpc.SnapPitchLevel(PhotoHolder.LevelSnapDegrees);
             var t = cam.transform;
             var photo = ps.Capture(new Pose(t.position, t.rotation), cam.fieldOfView, CaptureAspect, SnapshotLabel);
-            if (photo == null) return;
+            if (photo == null) return null;
 
             Film = _film - 1;
             Viewfinder.Flash();
             if (_inventory != null) _inventory.Add(photo);
             GameplayUI.Toast(_film > 0 ? "Click! Photo added (C to put the camera away)" : "Click! That was the last of the film");
             Captured?.Invoke(photo);
+            return photo;
         }
     }
 }

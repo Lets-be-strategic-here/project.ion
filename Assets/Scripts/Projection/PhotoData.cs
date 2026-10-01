@@ -38,6 +38,8 @@ namespace Ion.Projection
         public Matrix4x4 Relative;
         public int Layer;
         public ShadowCastingMode ShadowCasting;
+        /// <summary>Whether pasted copies get a MeshCollider (false for collider-less decor such as grass).</summary>
+        public bool Collide = true;
         public bool ReceiveShadows;
     }
 

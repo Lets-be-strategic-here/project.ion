@@ -41,6 +41,10 @@ namespace Ion.Levels
             ctx.CreateMarker(Marker, LevelColors.MarkerPhoto,
                 "This photo is sideways.  Raise it, turn it upright with Q / E, place");
             ctx.CreateTeleporter(new Vector3(10f, LedgeTop, 13f));
+
+            AddSolution("place", RoomSolution.Kind.Place, Marker, 0f, 0f, 0, 90f);
+            AddSolution("far", RoomSolution.Kind.Goal, new Vector3(0f, LedgeTop, 16f));
+            AddSolution("exit", RoomSolution.Kind.Goal, new Vector3(10f, LedgeTop, 13f));
         }
 
         static void BuildTerrain(Transform p)

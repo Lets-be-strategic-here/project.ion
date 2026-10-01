@@ -72,6 +72,18 @@ namespace Ion.Presentation
         public void Prompt(string text)
         {
             if (_promptText == null) return;
+            // While a photo is held up it covers the bottom of the screen: the controls go onto the
+            // Polaroid's own bottom border instead of a pill on top of its caption.
+            var overlay = PhotoOverlayUI.Instance;
+            if (overlay != null && overlay.IsShown)
+            {
+                overlay.SetHint(text);
+                text = null;
+            }
+            else if (overlay != null)
+            {
+                overlay.SetHint(null);
+            }
             if (string.IsNullOrEmpty(text))
             {
                 if (_promptCurrent != null)
@@ -255,7 +267,8 @@ namespace Ion.Presentation
 
             // Toast (upper centre).
             _toastPill = UIUtil.NewImage("ToastPill", root, UIUtil.WithAlpha(Palette.Cream, 0.92f), UIUtil.RoundedSprite, true).rectTransform;
-            UIUtil.Anchor(_toastPill, new Vector2(0.5f, 1f), new Vector2(0.5f, 0.5f), new Vector2(0f, -150f), new Vector2(300f, 60f));
+            // High enough to clear a raised photo's top border.
+            UIUtil.Anchor(_toastPill, new Vector2(0.5f, 1f), new Vector2(0.5f, 0.5f), new Vector2(0f, -92f), new Vector2(300f, 60f));
             _toastGroup = _toastPill.gameObject.AddComponent<CanvasGroup>();
             _toastGroup.blocksRaycasts = false;
             _toastGroup.interactable = false;
@@ -269,7 +282,8 @@ namespace Ion.Presentation
 
             // Film counter (top-right).
             var film = UIUtil.NewImage("Film", root, UIUtil.WithAlpha(Palette.Ink, 0.55f), UIUtil.RoundedSprite, true).rectTransform;
-            UIUtil.Anchor(film, new Vector2(1f, 1f), new Vector2(1f, 1f), new Vector2(-28f, -26f), new Vector2(250f, 44f));
+            // Below the page's "View projects" corner link (HTML, top-right).
+            UIUtil.Anchor(film, new Vector2(1f, 1f), new Vector2(1f, 1f), new Vector2(-24f, -78f), new Vector2(250f, 44f));
             _filmText = UIUtil.NewText("Text", film, "", 20, Palette.Cream, TextAnchor.MiddleCenter, FontStyle.Bold, false);
             UIUtil.Stretch(_filmText.rectTransform);
             _filmRoot = film.gameObject;

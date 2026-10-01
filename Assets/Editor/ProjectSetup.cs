@@ -156,7 +156,7 @@ namespace Ion.EditorTools
             urp.supportsHDR = false;
             urp.supportsCameraDepthTexture = false;
             urp.supportsCameraOpaqueTexture = false;
-            urp.shadowDistance = 60f;
+            urp.shadowDistance = 40f;
             urp.shadowCascadeCount = 1;
             urp.renderScale = 1f;
             urp.useSRPBatcher = true;
@@ -175,13 +175,14 @@ namespace Ion.EditorTools
             SetInt(so, "m_MainLightShadowmapResolution", 2048);
             SetInt(so, "m_AdditionalLightsRenderingMode", (int)UnityEngine.Rendering.Universal.LightRenderingMode.PerVertex);
             SetBool(so, "m_AdditionalLightShadowsSupported", false);
-            SetBool(so, "m_SoftShadowsSupported", false);
+            SetBool(so, "m_SoftShadowsSupported", true); // filtered edges; AdaptiveQuality picks the quality per tier
+            SetInt(so, "m_SoftShadowQuality", 2);
             SetBool(so, "m_SupportsDynamicBatching", false);
             SetBool(so, "m_RequireDepthTexture", false);
             SetBool(so, "m_RequireOpaqueTexture", false);
             SetBool(so, "m_SupportsHDR", false);
             SetInt(so, "m_MSAA", 4);
-            SetFloat(so, "m_ShadowDistance", 60f);
+            SetFloat(so, "m_ShadowDistance", 40f);
             SetInt(so, "m_ShadowCascadeCount", 1);
             so.ApplyModifiedPropertiesWithoutUndo();
             EditorUtility.SetDirty(urp);

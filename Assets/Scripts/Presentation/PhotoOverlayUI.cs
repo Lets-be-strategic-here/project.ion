@@ -19,7 +19,7 @@ namespace Ion.Presentation
         public static PhotoOverlayUI Instance { get; private set; }
 
         /// <summary>Alpha of the photo image while raised (frame stays opaque).</summary>
-        public float RaisedImageAlpha = 0.86f;
+        public float RaisedImageAlpha = 0.9f;
         /// <summary>Show the selected photo small in the corner when nothing is raised.</summary>
         public bool ShowLoweredPreview = true;
         /// <summary>Lowered preview height as a fraction of the screen height.</summary>
@@ -39,6 +39,8 @@ namespace Ion.Presentation
         RectTransform _holder;
         RawImage _image;
         Text _caption;
+        Text _hint;
+        string _hintText;
         Image _flash;
 
         PhotoData _raisedPhoto;
@@ -101,6 +103,15 @@ namespace Ion.Presentation
             _raised = false;
             _raisedPhoto = null;
             _suppressed = null;
+        }
+
+        /// <summary>Controls line printed small on the raised Polaroid's bottom border (null hides it).</summary>
+        public void SetHint(string text)
+        {
+            if (text == _hintText || _hint == null) return;
+            _hintText = text;
+            _hint.text = text ?? string.Empty;
+            _hint.enabled = !string.IsNullOrEmpty(text);
         }
 
         /// <summary>Bind to a camera explicitly (otherwise the player's camera / Camera.main is used).</summary>
@@ -328,13 +339,23 @@ namespace Ion.Presentation
             ert.sizeDelta = new Vector2(0f, 3f);
 
             // Hand-written-ish caption on the bottom strip.
-            _caption = UIUtil.NewText("Caption", _holder, "", 38, Palette.Slate, TextAnchor.MiddleCenter, FontStyle.Italic, false);
+            _caption = UIUtil.NewText("Caption", _holder, "", 36, Palette.Slate, TextAnchor.MiddleCenter, FontStyle.Italic, false);
             var crt = _caption.rectTransform;
             crt.anchorMin = new Vector2(0f, 0f);
             crt.anchorMax = new Vector2(1f, 0f);
             crt.pivot = new Vector2(0.5f, 1f);
-            crt.anchoredPosition = new Vector2(0f, -6f);
-            crt.sizeDelta = new Vector2(0f, BottomBorder - 12f);
+            crt.anchoredPosition = new Vector2(0f, -4f);
+            crt.sizeDelta = new Vector2(0f, BottomBorder * 0.6f);
+
+            // Small printed controls line under the caption (only while raised; see SetHint).
+            _hint = UIUtil.NewText("Hint", _holder, "", 15, UIUtil.WithAlpha(Palette.Slate, 0.85f), TextAnchor.MiddleCenter, FontStyle.Bold, false);
+            var hrt = _hint.rectTransform;
+            hrt.anchorMin = new Vector2(0f, 0f);
+            hrt.anchorMax = new Vector2(1f, 0f);
+            hrt.pivot = new Vector2(0.5f, 1f);
+            hrt.anchoredPosition = new Vector2(0f, -4f - BottomBorder * 0.6f);
+            hrt.sizeDelta = new Vector2(0f, BottomBorder * 0.3f);
+            _hint.enabled = false;
 
             _holder.gameObject.SetActive(false);
 

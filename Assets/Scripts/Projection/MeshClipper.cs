@@ -174,14 +174,18 @@ namespace Ion.Projection
         {
             public readonly List<Vector3> P = new List<Vector3>(256);
             public readonly List<Vector3> N = new List<Vector3>(256);
+            /// <summary>Vertex colours (only when <see cref="HasColors"/>): interpolated like normals, caps get the boundary average.</summary>
+            public readonly List<Color32> C = new List<Color32>(256);
             public readonly List<List<int>> T = new List<List<int>>();
             public int SubCount;
             public bool HasNormals;
+            public bool HasColors;
 
             public void Reset(int subCount)
             {
                 P.Clear();
                 N.Clear();
+                C.Clear();
                 SubCount = Mathf.Max(1, subCount);
                 while (T.Count < SubCount) T.Add(new List<int>(256));
                 for (int i = 0; i < T.Count; i++) T[i].Clear();
@@ -193,6 +197,9 @@ namespace Ion.Projection
                 mesh.GetVertices(P);
                 mesh.GetNormals(N);
                 HasNormals = N.Count == P.Count;
+                mesh.GetColors(C);
+                HasColors = C.Count == P.Count && P.Count > 0;
+                if (!HasColors) C.Clear();
                 if (!HasNormals)
                 {
                     N.Clear();
@@ -216,6 +223,7 @@ namespace Ion.Projection
                 if (P.Count > 65535) mesh.indexFormat = IndexFormat.UInt32;
                 mesh.SetVertices(P);
                 mesh.SetNormals(N);
+                if (HasColors && C.Count == P.Count) mesh.SetColors(C);
                 mesh.subMeshCount = SubCount;
                 for (int s = 0; s < SubCount; s++) mesh.SetTriangles(T[s], s, false);
                 mesh.RecalculateBounds();
@@ -350,6 +358,7 @@ namespace Ion.Projection
             s_dst = dst;
             dst.Reset(src.SubCount);
             dst.HasNormals = src.HasNormals;
+            dst.HasColors = src.HasColors;
             for (int i = 0; i < vc; i++) s_remap[i] = -1;
             s_edgeCache.Clear();
             s_dstOnPlane.Clear();
@@ -417,6 +426,7 @@ namespace Ion.Projection
             r = s_dst.P.Count;
             s_dst.P.Add(s_src.P[i]);
             s_dst.N.Add(s_src.N[i]);
+            if (s_src.HasColors) s_dst.C.Add(s_src.C[i]);
             s_dstOnPlane.Add(s_side[i] == 0);
             s_remap[i] = r;
             return r;
@@ -442,6 +452,7 @@ namespace Ion.Projection
             int r = s_dst.P.Count;
             s_dst.P.Add(pos);
             s_dst.N.Add(nrm);
+            if (s_src.HasColors) s_dst.C.Add(Color32.Lerp(s_src.C[a], s_src.C[b], t));
             s_dstOnPlane.Add(true);
             s_edgeCache[key] = r;
             s_cut.Add(pos);
@@ -472,6 +483,22 @@ namespace Ion.Projection
             if (oa && ob) s_cutEdges.Add(new Edge(pa, pb));
             if (ob && oc) s_cutEdges.Add(new Edge(pb, pc));
             if (oc && oa) s_cutEdges.Add(new Edge(pc, pa));
+        }
+
+        /// <summary>Average colour of the kept vertices lying on the cutting plane (the cap's colour).</summary>
+        static Color32 CapColor()
+        {
+            List<Color32> c = s_dst.C;
+            int r = 0, g = 0, b = 0, a = 0, n = 0;
+            int count = Mathf.Min(c.Count, s_dstOnPlane.Count);
+            for (int i = 0; i < count; i++)
+            {
+                if (!s_dstOnPlane[i]) continue;
+                Color32 v = c[i];
+                r += v.r; g += v.g; b += v.b; a += v.a; n++;
+            }
+            if (n == 0) return c.Count > 0 ? c[0] : new Color32(255, 255, 255, 255);
+            return new Color32((byte)(r / n), (byte)(g / n), (byte)(b / n), (byte)(a / n));
         }
 
         /// <summary>
@@ -528,6 +555,8 @@ namespace Ion.Projection
 
             List<Vector3> P = s_dst.P, N = s_dst.N;
             List<int> tris = s_dst.T[0];
+            bool colors = s_dst.HasColors;
+            Color32 capColor = colors ? CapColor() : default;
             for (int l = 0; l + 1 < s_loopStarts.Count; l++)
             {
                 int begin = s_loopStarts[l], count = s_loopStarts[l + 1] - begin;
@@ -540,11 +569,13 @@ namespace Ion.Projection
                 int center = P.Count;
                 P.Add(centroid);
                 N.Add(capNormal);
+                if (colors) s_dst.C.Add(capColor);
                 int first = P.Count;
                 for (int i = 0; i < count; i++)
                 {
                     P.Add(s_loop[begin + i]);
                     N.Add(capNormal);
+                    if (colors) s_dst.C.Add(capColor);
                 }
                 for (int i = 0; i < count; i++)
                 {
@@ -600,14 +631,18 @@ namespace Ion.Projection
             // have normal = cross(b - a, c - a), so (center, p[i], p[i+1]) faces along capNormal.
             List<Vector3> P = s_dst.P, N = s_dst.N;
             List<int> tris = s_dst.T[0];
+            bool colors = s_dst.HasColors;
+            Color32 capColor = colors ? CapColor() : default;
             int center = P.Count;
             P.Add(centroid);
             N.Add(capNormal);
+            if (colors) s_dst.C.Add(capColor);
             int first = P.Count;
             for (int i = 0; i < count; i++)
             {
                 P.Add(s_capPoints[i]);
                 N.Add(capNormal);
+                if (colors) s_dst.C.Add(capColor);
             }
             for (int i = 0; i < count; i++)
             {

@@ -7,10 +7,10 @@ Shader "Ion/PhotoDisplay"
     {
         [PerRendererData] _MainTex ("Texture", 2D) = "white" {}
         _Color ("Tint", Color) = (1, 1, 1, 1)
-        _Saturation ("Saturation", Range(0, 1)) = 0.8
-        _WarmTint ("Warm Tint", Color) = (1.06, 1.0, 0.90, 1)
-        _Lift ("Black Lift", Range(0, 0.3)) = 0.06
-        _Vignette ("Vignette Strength", Range(0, 1)) = 0.28
+        _Saturation ("Saturation", Range(0, 1)) = 0.93
+        _WarmTint ("Warm Tint", Color) = (1.03, 1.0, 0.95, 1)
+        _Lift ("Black Lift", Range(0, 0.3)) = 0.015
+        _Vignette ("Vignette Strength", Range(0, 1)) = 0.2
         _VignetteStart ("Vignette Start", Range(0, 1)) = 0.35
         _VignetteEnd ("Vignette End", Range(0, 1.2)) = 0.85
 

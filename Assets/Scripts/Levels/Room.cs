@@ -21,6 +21,63 @@ namespace Ion.Levels
         public virtual string Intro => null;
 
         public abstract void Build(Transform root, RoomContext ctx);
+
+        /// <summary>
+        /// Where the intended solution is performed (room-local feet positions + view), filled by
+        /// <see cref="Build"/>. Used by the debug harness (IonDebug.GoTo) and the PlayMode solvability tests.
+        /// </summary>
+        public readonly List<RoomSolution> Solutions = new List<RoomSolution>();
+
+        /// <summary>Records a solution spot (see <see cref="Solutions"/>).</summary>
+        protected void AddSolution(string name, RoomSolution.Kind action, Vector3 localFeet, float yaw = 0f,
+                                   float pitch = 0f, int photoIndex = -1, float roll = 0f)
+        {
+            Solutions.Add(new RoomSolution
+            {
+                Name = name,
+                Action = action,
+                LocalFeet = localFeet,
+                Yaw = yaw,
+                Pitch = pitch,
+                PhotoIndex = photoIndex,
+                Roll = roll,
+            });
+        }
+
+        /// <summary>The solution spot called <paramref name="name"/> (case-insensitive), or null.</summary>
+        public RoomSolution FindSolution(string name)
+        {
+            for (int i = 0; i < Solutions.Count; i++)
+                if (string.Equals(Solutions[i].Name, name, StringComparison.OrdinalIgnoreCase))
+                    return Solutions[i];
+            return null;
+        }
+    }
+
+    /// <summary>
+    /// One step of a room's intended solution: stand at <see cref="LocalFeet"/> (room-local), look along
+    /// <see cref="Yaw"/>/<see cref="Pitch"/> (degrees, 0 = room +Z, level) and do <see cref="Action"/>.
+    /// </summary>
+    public sealed class RoomSolution
+    {
+        public enum Kind
+        {
+            /// <summary>Raise photo <see cref="PhotoIndex"/>, rotate it by <see cref="Roll"/> and place it.</summary>
+            Place,
+            /// <summary>Take an instant-camera snapshot.</summary>
+            Snap,
+            /// <summary>A place the player must be able to reach (far side, exit teleporter, pickup).</summary>
+            Goal,
+        }
+
+        public string Name;
+        public Kind Action;
+        public Vector3 LocalFeet;
+        public float Yaw, Pitch;
+        /// <summary>Index into the room's own pre-made photos (diorama shots); -1 = the latest instant-camera snapshot.</summary>
+        public int PhotoIndex = -1;
+        /// <summary>Roll the raised photo must have when placed (multiples of 90; positive = Q).</summary>
+        public float Roll;
     }
 
     /// <summary>
@@ -77,6 +134,15 @@ namespace Ion.Levels
 
         internal readonly List<DioramaShot> Shots = new List<DioramaShot>();
 
+        /// <summary>Room-local discs (x, z, radius in xyz) that scattered decor must stay out of.</summary>
+        internal readonly List<Vector3> KeepClear = new List<Vector3>();
+
+        /// <summary>Keeps scattered grass / flowers out of a disc around <paramref name="localPos"/>.</summary>
+        public void KeepClearAt(Vector3 localPos, float radius)
+        {
+            KeepClear.Add(new Vector3(localPos.x, localPos.z, radius));
+        }
+
         internal RoomContext(GameBootstrap game, int index, Room room, Transform worldRoot, Vector3 dioramaOrigin)
         {
             _game = game;
@@ -116,6 +182,18 @@ namespace Ion.Levels
         }
 
         public bool HasDiorama => _diorama != null;
+
+        /// <summary>The room's pre-made photos in registration order (null until captured).</summary>
+        public PhotoData GetShotPhoto(int index) =>
+            index >= 0 && index < Shots.Count ? Shots[index].Photo : null;
+
+        public int ShotCount => Shots.Count;
+
+        /// <summary>World-space feet position and view rotation (yaw/pitch) of a solution spot.</summary>
+        public Vector3 SolutionFeet(RoomSolution s) => WorldRoot.TransformPoint(s.LocalFeet);
+
+        /// <summary>World yaw (degrees) of a solution spot.</summary>
+        public float SolutionYaw(RoomSolution s) => (WorldRoot.rotation * Quaternion.Euler(0f, s.Yaw, 0f)).eulerAngles.y;
 
         /// <summary>World-space spawn (feet position; rotation = facing).</summary>
         public Pose Spawn => _hasSpawn ? _spawn : new Pose(WorldRoot.position, WorldRoot.rotation);
@@ -189,6 +267,7 @@ namespace Ion.Levels
         public GameObject PlacePhotoPickup(Vector3 localPos, DioramaShot shot)
         {
             const float pedestalHeight = 0.9f;
+            KeepClearAt(localPos, 1.0f);
             var pedestal = new GameObject("PhotoPedestal");
             pedestal.transform.SetParent(WorldRoot, false);
             pedestal.transform.localPosition = localPos;
@@ -216,6 +295,7 @@ namespace Ion.Levels
         /// </summary>
         public Teleporter CreateTeleporter(Vector3 localPos, Action onEnter = null)
         {
+            KeepClearAt(localPos, 1.7f);
             var go = new GameObject("Teleporter");
             go.transform.SetParent(WorldRoot, false);
             go.transform.localPosition = localPos;
@@ -267,6 +347,7 @@ namespace Ion.Levels
         /// <summary>Marker whose arrow points along <paramref name="yaw"/> (0 = room +Z).</summary>
         public GameObject CreateMarker(Vector3 localPos, float yaw, Color color, string hint, float radius = 1.1f)
         {
+            KeepClearAt(localPos, radius + 0.35f);
             var go = new GameObject("Marker");
             go.transform.SetParent(WorldRoot, false);
             go.transform.localPosition = localPos;
@@ -301,6 +382,7 @@ namespace Ion.Levels
         /// <summary>A floating instant camera; walking into it unlocks the camera with <paramref name="film"/> shots.</summary>
         public CameraPickup CreateCameraPickup(Vector3 localPos, int film = 3)
         {
+            KeepClearAt(localPos, 0.9f);
             var go = new GameObject("CameraPickup");
             go.transform.SetParent(WorldRoot, false);
             go.transform.localPosition = localPos;
