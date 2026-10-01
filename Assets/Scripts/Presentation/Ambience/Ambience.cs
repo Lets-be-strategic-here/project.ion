@@ -16,6 +16,7 @@ namespace Ion.Presentation
     /// <item>Sway: off on Low, <see cref="SwayAmount"/> metres otherwise (vertex-only, Ion/FlatToon).</item>
     /// <item>Sun glow: 1 additive quad (Low/Med), 2 on High.</item>
     /// <item>Rim: <see cref="RimStrength"/> multiplier on every Ion/FlatToon material (global).</item>
+    /// <item>Contact shade: deeper on Low (no realtime shadows), via the same global.</item>
     /// </list>
     /// </summary>
     public static class Ambience
@@ -106,7 +107,9 @@ namespace Ion.Presentation
         {
             float rim = s_Rim ? s_RimStrength : 0f;
             float sway = s_Sway && Tier > QualityTier.Low ? 1f : 0f;
-            Shader.SetGlobalVector(ToonParamsId, new Vector4(rim, sway, 1f, 0f));
+            // w: the Low tier has no realtime shadows, so contact-shade discs deepen (FlatToon _AoBoost).
+            float contact = Tier == QualityTier.Low ? 1f : 0f;
+            Shader.SetGlobalVector(ToonParamsId, new Vector4(rim, sway, 1f, contact));
         }
 
         /// <summary>

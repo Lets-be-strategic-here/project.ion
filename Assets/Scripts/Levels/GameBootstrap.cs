@@ -94,6 +94,11 @@ namespace Ion.Levels
             _rooms.Add(new GalleryRoom());
             BuildRooms();
 
+            // 3b. Distant scenery around the rooms (not sliceable; drawn shifted for diorama captures).
+            float middle = (_rooms.Count - 1) * RoomSpacing * 0.5f;
+            Backdrop.Build(new Vector3(middle, 0f, -5f));
+            Backdrop.SetDioramaMapping(DioramaY * 0.5f, DioramaSpacing, DioramaSpacing - RoomSpacing, DioramaY);
+
             // 4. UI.
             UIFactory.Create();
 
@@ -184,6 +189,9 @@ namespace Ion.Levels
                 hud.BindInventory(_player.GetComponent<PhotoInventory>());
 
             AnnounceRoom(0);
+
+            // Exercise the placement path once now, so the first real click is not the slow one.
+            if (ps != null) ps.WarmUp();
 
             // Captured photos hold their own clipped meshes; the dioramas are no longer needed once the
             // previews exist. When the render pipeline was not up yet at capture time (first frames of

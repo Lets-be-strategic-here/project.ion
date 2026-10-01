@@ -52,6 +52,10 @@ namespace Ion.Presentation
         float _nextSearch;
 
         // Toast placement (default top centre, or the left gutter beside a tall raised photo).
+        const float FilmInset = 24f + 250f;      // the film pill's right margin + width
+        const float CornerBlocksBottom = 124f;   // below the strip's slots and the film pill
+        float _toastAvoid = -1f;
+        float _toastCovered;
         bool _toastInGutter;
         string _toastLaidOut;
         float _toastGutterWidth = -1f;
@@ -197,12 +201,15 @@ namespace Ion.Presentation
                     _camera = Object.FindFirstObjectByType<InstantCamera>();
             }
 
-            // Toast fade.
+            // Toast fade. A toast that would sit on a raised photo (narrow / square windows, where it
+            // cannot step aside into a gutter) is hidden while the photo is up: the photo's own border
+            // already shows its controls.
             if (_toastTime > 0f)
             {
                 LayoutToast(false);
                 _toastTime -= dt;
-                _toastGroup.alpha = Mathf.Clamp01(_toastTime / ToastFade);
+                _toastCovered = Mathf.MoveTowards(_toastCovered, ToastOverlapsRaisedPhoto() ? 1f : 0f, dt * 8f);
+                _toastGroup.alpha = Mathf.Clamp01(_toastTime / ToastFade) * (1f - _toastCovered);
                 float age = _toastDuration - _toastTime;
                 float pop = 1f + 0.08f * Mathf.Clamp01(1f - age / 0.15f);
                 _toastPill.localScale = new Vector3(pop, pop, 1f);
@@ -545,21 +552,50 @@ namespace Ion.Presentation
                 }
             }
 
+            // The top corners hold the photo strip (left) and the film pill (right): a centred toast
+            // must fit between them (narrow / square windows), wrapping or dropping below if needed.
+            float leftBlock = StripRight();
+            float rightBlock = _filmRoot != null && _filmRoot.activeSelf ? FilmInset : 0f;
+            float avoid = leftBlock * 4096f + rightBlock + canvas.width * 1e-3f;
+
             string text = _toastText.text;
             if (!force && gutter == _toastInGutter && text == _toastLaidOut &&
-                (!gutter || Mathf.Abs(gutterWidth - _toastGutterWidth) < 1f))
+                (!gutter || Mathf.Abs(gutterWidth - _toastGutterWidth) < 1f) && Mathf.Abs(avoid - _toastAvoid) < 0.5f)
                 return;
             _toastInGutter = gutter;
             _toastLaidOut = text;
             _toastGutterWidth = gutterWidth;
+            _toastAvoid = avoid;
 
             if (!gutter)
             {
+                const float gap = 18f, minWrapWidth = 360f;
+                float half = canvas.width * 0.5f;
+                float free = 2f * Mathf.Min(half - leftBlock - gap, half - rightBlock - gap);
                 _toastText.horizontalOverflow = HorizontalWrapMode.Overflow;
-                _toastPill.anchoredPosition = new Vector2(0f, -ToastY);
-                _toastPill.sizeDelta = new Vector2(_toastText.preferredWidth + 64f, 60f);
                 _toastText.rectTransform.offsetMin = Vector2.zero;
                 _toastText.rectTransform.offsetMax = Vector2.zero;
+                float want = _toastText.preferredWidth + 64f;
+                float maxWidth = canvas.width - 48f;
+                if (want <= free || (leftBlock <= 0f && rightBlock <= 0f && want <= maxWidth))
+                {
+                    _toastPill.anchoredPosition = new Vector2(0f, -ToastY);
+                    _toastPill.sizeDelta = new Vector2(want, 60f);
+                    return;
+                }
+
+                // Wrap to the free width (two lines usually); if even that is too narrow, wrap to a
+                // readable width and move the toast below the corner blocks.
+                float w = Mathf.Min(want, Mathf.Max(free, minWrapWidth), maxWidth);
+                _toastText.horizontalOverflow = HorizontalWrapMode.Wrap;
+                _toastText.rectTransform.offsetMin = new Vector2(24f, 0f);
+                _toastText.rectTransform.offsetMax = new Vector2(-24f, 0f);
+                _toastPill.sizeDelta = new Vector2(w, 60f);
+                float h = Mathf.Max(60f, _toastText.preferredHeight + 26f);
+                _toastPill.sizeDelta = new Vector2(w, h);
+                float topY = ToastY - 30f;                       // the single-line pill's top edge
+                if (w > free + 1f) topY = Mathf.Max(topY, CornerBlocksBottom + 12f);
+                _toastPill.anchoredPosition = new Vector2(0f, -(topY + h * 0.5f));
                 return;
             }
 
@@ -572,6 +608,29 @@ namespace Ion.Presentation
             _toastPill.sizeDelta = new Vector2(width, height);
             // Anchor is the top centre of the canvas; centre vertically in the gutter.
             _toastPill.anchoredPosition = new Vector2(gutterCenterX, -canvas.height * 0.5f);
+        }
+
+        /// <summary>True when the (centred) toast pill would overlap a raised photo's frame, with a 12 px margin.</summary>
+        bool ToastOverlapsRaisedPhoto()
+        {
+            if (_toastInGutter) return false;
+            var overlay = PhotoOverlayUI.Instance;
+            if (overlay == null || !overlay.TryGetRaisedFrameRect(out Rect frame)) return false;
+            Rect canvas = ((RectTransform)transform).rect;
+            Vector2 size = _toastPill.sizeDelta;
+            float cx = _toastPill.anchoredPosition.x;
+            float cy = canvas.yMax + _toastPill.anchoredPosition.y;   // anchored to the top centre
+            var toast = new Rect(cx - size.x * 0.5f, cy - size.y * 0.5f - 12f, size.x, size.y + 12f);
+            return toast.Overlaps(frame);
+        }
+
+        /// <summary>Right edge of the photo strip's last slot, in canvas units from the left edge (0 if empty).</summary>
+        float StripRight()
+        {
+            if (_slots.Count == 0 || _strip == null) return 0f;
+            RectTransform last = _slots[_slots.Count - 1].Root;
+            if (last == null) return 0f;
+            return _strip.anchoredPosition.x + last.anchoredPosition.x + last.sizeDelta.x * 0.5f;
         }
 
         // ---------------------------------------------------------------- construction

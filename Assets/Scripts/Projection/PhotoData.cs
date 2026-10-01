@@ -41,6 +41,24 @@ namespace Ion.Projection
         /// <summary>Whether pasted copies get a MeshCollider (false for collider-less decor such as grass).</summary>
         public bool Collide = true;
         public bool ReceiveShadows;
+        /// <summary>Element table + CPU data when the piece merges several captured pieces (null otherwise).</summary>
+        public PieceElements Elements;
+    }
+
+    /// <summary>Element table and CPU mesh data of a merged photo piece (see <see cref="MeshElements"/>).</summary>
+    internal sealed class PieceElements
+    {
+        public int[] VertexStart, VertexCount, IndexStart, IndexCount;
+        public Bounds[] Bounds;
+        public Vector3[] Positions, Normals;
+        public Color32[] Colors;
+        public int[] Indices;
+
+        public void ApplyTo(MeshElements el, Mesh mesh)
+        {
+            el.Set(mesh, VertexStart, VertexCount, IndexStart, IndexCount, Bounds);
+            el.SetData(Positions, Normals, Colors, Indices);
+        }
     }
 
     /// <summary>A captured Interactable: an inactive template clone and its pose relative to the capture pose.</summary>

@@ -274,6 +274,7 @@ namespace Ion.Levels
             Geo.Prism(pedestal.transform, new Vector3(0f, 0.1f, 0f), new Vector3(1.1f, 0.2f, 1.1f), Palette.Stone, 6);
             Geo.Prism(pedestal.transform, new Vector3(0f, pedestalHeight * 0.5f, 0f), new Vector3(0.55f, pedestalHeight, 0.55f), Palette.Cream, 6);
             Geo.Prism(pedestal.transform, new Vector3(0f, pedestalHeight + 0.05f, 0f), new Vector3(0.8f, 0.1f, 0.8f), Palette.Coral, 6);
+            Kit.Contact(WorldRoot, localPos, 1.0f);
 
             Vector3 top = pedestal.transform.TransformPoint(new Vector3(0f, pedestalHeight + 0.1f, 0f));
             Transform parent = WorldRoot;
@@ -296,6 +297,8 @@ namespace Ion.Levels
         public Teleporter CreateTeleporter(Vector3 localPos, Action onEnter = null)
         {
             KeepClearAt(localPos, 1.7f);
+            // Contact shade under the base (a sibling: decor must not sit inside the Interactable).
+            Kit.Contact(WorldRoot, localPos, 1.75f);
             var go = new GameObject("Teleporter");
             go.transform.SetParent(WorldRoot, false);
             go.transform.localPosition = localPos;
@@ -393,6 +396,7 @@ namespace Ion.Levels
 
             // Pedestal is world geometry (sliceable), so it is a sibling, not a child of the Interactable.
             Geo.Prism(WorldRoot, localPos + new Vector3(0f, 0.45f, 0f), new Vector3(0.7f, 0.9f, 0.7f), Palette.Cream, 6);
+            Kit.Contact(WorldRoot, localPos, 0.75f);
             var vis = new GameObject("Visual").transform;
             vis.SetParent(t, false);
             vis.localPosition = new Vector3(0f, 1.3f, 0f);

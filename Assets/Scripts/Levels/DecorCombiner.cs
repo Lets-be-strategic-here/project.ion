@@ -189,8 +189,10 @@ namespace Ion.Levels
                 r.receiveShadows = true;
                 if (key.Collider) go.AddComponent<MeshCollider>().sharedMesh = mesh;
                 go.AddComponent<Sliceable>();
-                go.AddComponent<MeshElements>().Set(mesh, g.ElemV0.ToArray(), g.ElemVN.ToArray(), g.ElemT0.ToArray(),
-                                                    g.ElemTN.ToArray(), g.ElemBounds.ToArray());
+                var el = go.AddComponent<MeshElements>();
+                el.Set(mesh, g.ElemV0.ToArray(), g.ElemVN.ToArray(), g.ElemT0.ToArray(), g.ElemTN.ToArray(), g.ElemBounds.ToArray());
+                // CPU copies for the slicer (no GPU readback on the first cut).
+                el.SetData(g.P.ToArray(), g.N.ToArray(), g.C.ToArray(), g.T.ToArray());
             }
             s_v.Clear();
             s_n.Clear();

@@ -111,6 +111,18 @@ namespace Ion.Tests
         /// The default weld is exact: the clipper produces bit-identical positions for coincident
         /// points, while legitimately distinct sliver points may lie closer than any tolerance.
         /// </summary>
+        /// <summary>Signed volume of one element of a merged mesh (see Ion.Projection.MeshElements).</summary>
+        public static float ElementVolume(Ion.Projection.MeshElements el, int e)
+        {
+            Vector3[] p = el.Mesh.vertices;
+            int[] t = el.Mesh.GetIndices(0);
+            double v = 0;
+            int t0 = el.IndexStart[e], tn = el.IndexCount[e];
+            for (int i = t0; i + 2 < t0 + tn; i += 3)
+                v += Vector3.Dot(p[t[i]], Vector3.Cross(p[t[i + 1]], p[t[i + 2]]));
+            return (float)(v / 6.0);
+        }
+
         public static void AssertWatertight(Mesh mesh, float weld = 0f)
         {
             Vector3[] v = mesh.vertices;

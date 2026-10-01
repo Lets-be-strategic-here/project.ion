@@ -45,6 +45,17 @@ namespace Ion.Presentation.Quality
         /// <summary>True while the settings card is (becoming) visible.</summary>
         public bool IsVisible => _wantVisible;
 
+        const float CardW = 400f, CardH = 344f, CardMargin = 28f;
+
+        /// <summary>
+        /// Canvas units taken from the right edge (card width + margin) while the card is visible, 0 otherwise.
+        /// The click-to-play card moves left / shrinks to stay clear of it on small windows.
+        /// </summary>
+        public float ReservedRight { get; private set; }
+
+        /// <summary>Height of the card's top edge above the bottom of the canvas (canvas units).</summary>
+        public float ReservedTop { get; private set; }
+
         RectTransform _card;
         GameObject _cardContent;
         CanvasGroup _group;
@@ -179,6 +190,8 @@ namespace Ion.Presentation.Quality
             if (_cardContent.activeSelf != active) _cardContent.SetActive(active);
             _group.blocksRaycasts = _wantVisible;
 
+            LayoutCard();
+
             if (active)
             {
                 _statusTimer -= dt;
@@ -193,6 +206,17 @@ namespace Ion.Presentation.Quality
             if (_showFps) UpdateFps(dt);
 
             _wasUnlocked = Cursor.lockState != CursorLockMode.Locked;
+        }
+
+        /// <summary>Fits the card on short / narrow windows (scaled about its bottom-right corner).</summary>
+        void LayoutCard()
+        {
+            Rect r = ((RectTransform)transform).rect;
+            float scale = Mathf.Min(1f, (r.height - CardMargin * 2f) / CardH, r.width * 0.42f / CardW);
+            scale = Mathf.Max(0.6f, scale);
+            if (!Mathf.Approximately(_card.localScale.x, scale)) _card.localScale = new Vector3(scale, scale, 1f);
+            ReservedRight = _wantVisible ? CardW * scale + CardMargin : 0f;
+            ReservedTop = _wantVisible ? CardH * scale + CardMargin : 0f;
         }
 
         // ------------------------------------------------------------------ pointer
@@ -454,7 +478,7 @@ namespace Ion.Presentation.Quality
             UIUtil.Stretch(_fpsText.rectTransform);
 
             // Settings card: bottom-right, clear of the centred click-to-play card.
-            const float w = 400f, h = 344f, pad = 20f;
+            const float w = CardW, h = CardH, pad = 20f;
             _card = UIUtil.NewRect("Settings", root);
             UIUtil.Anchor(_card, new Vector2(1f, 0f), new Vector2(1f, 0f), new Vector2(-28f, 28f), new Vector2(w, h));
             _group = _card.gameObject.AddComponent<CanvasGroup>();

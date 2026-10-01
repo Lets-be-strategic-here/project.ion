@@ -1,5 +1,6 @@
 // |project|ion — Ion/GradientSky
-// Three-colour vertical gradient skybox (top / horizon / bottom) with a soft sun glow.
+// Three-colour vertical gradient skybox (top / horizon / bottom), golden horizon towards the sun, soft
+// halo and sun disc. Uses the Atmosphere globals (IonAtmosphere.hlsl) so fog fades into exactly this sky.
 Shader "Ion/GradientSky"
 {
     Properties
@@ -34,6 +35,7 @@ Shader "Ion/GradientSky"
             #pragma fragment Frag
 
             #include "Packages/com.unity.render-pipelines.universal/ShaderLibrary/Core.hlsl"
+            #include "IonAtmosphere.hlsl"
 
             CBUFFER_START(UnityPerMaterial)
                 half4 _TopColor;
@@ -74,22 +76,33 @@ Shader "Ion/GradientSky"
                 float3 dir = normalize(input.dirOS);
                 half y = (half)dir.y;
 
-                half up = pow(saturate(y), _TopExponent);
-                half down = pow(saturate(-y), _BottomExponent);
-                half3 col = lerp(_HorizonColor.rgb, _TopColor.rgb, up);
-                col = lerp(col, _BottomColor.rgb, down);
+                half3 col;
+                if (dot(_IonSkyHorizon.rgb, float3(1, 1, 1)) > 0.0001)
+                {
+                    // Same gradient (with the golden horizon and sun halo) that the fog fades into.
+                    col = (half3)IonSkyColor(dir);
+                }
+                else
+                {
+                    half up = pow(saturate(y), _TopExponent);
+                    half down = pow(saturate(-y), _BottomExponent);
+                    col = lerp(_HorizonColor.rgb, _TopColor.rgb, up);
+                    col = lerp(col, _BottomColor.rgb, down);
+                }
 
-                // Soft sun glow towards the main light (URP global, w = 0 for directional).
+                // Sun disc (+ the material halo when the globals are missing) towards the main light.
                 float3 sunDir = _MainLightPosition.xyz;
                 if (dot(sunDir, sunDir) > 0.0001)
                 {
                     // float: pow(d, ~600) needs full precision near d = 1.
                     float d = saturate(dot(dir, normalize(sunDir)));
-                    float glow = pow(d, (float)_SunSize) + _SunHalo * pow(d, 8.0);
-                    col += _SunColor.rgb * (half)glow * saturate(y * 4.0h + 0.5h);
+                    float halo = dot(_IonSkyHorizon.rgb, float3(1, 1, 1)) > 0.0001 ? 0.0 : _SunHalo * pow(d, 8.0);
+                    float glow = pow(d, (float)_SunSize) + halo;
+                    // Blended towards the warm disc colour (adding it clipped the core to cool white).
+                    col = lerp(col, _SunColor.rgb, saturate((half)glow * saturate(y * 4.0h + 0.5h)));
                 }
 
-                return half4(col, 1.0h);
+                return half4(IonGrade(col, input.positionCS.xy), 1.0h);
             }
             ENDHLSL
         }

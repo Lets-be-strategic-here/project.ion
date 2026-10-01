@@ -105,8 +105,55 @@ namespace Ion.Projection
             if (!CheckReadable(mesh)) return Classification.Outside;
 
             int planeCount = ToLocalPlanes(localToWorld, worldPlanes);
+            s_bufA.Load(mesh);
+            return ClipOutsideCore(planeCount, mesh.name, results, null);
+        }
+
+        /// <summary>
+        /// Receives the outside pieces of a cut as raw buffers (valid only during the call: copy them).
+        /// Normals / colours are null when the source has none. One submesh only.
+        /// </summary>
+        internal interface IPieceSink
+        {
+            void AddPiece(List<Vector3> positions, List<Vector3> normals, List<Color32> colors, List<int> indices);
+        }
+
+        /// <summary>
+        /// Like <see cref="ClipOutside(Mesh, Matrix4x4, Plane[], List{Mesh})"/>, but hands the outside pieces
+        /// to <paramref name="sink"/> instead of creating meshes. The mesh must have one triangle submesh and normals.
+        /// </summary>
+        internal static Classification ClipOutsideInto(Mesh mesh, Matrix4x4 localToWorld, Plane[] worldPlanes, IPieceSink sink)
+        {
+            if (mesh == null) return Classification.Outside;
+            if (worldPlanes == null || worldPlanes.Length == 0) return Classification.Inside;
+
+            Classification fast = ClassifyBounds(mesh.bounds, localToWorld, worldPlanes);
+            if (fast != Classification.Straddling) return fast;
+            if (!CheckReadable(mesh)) return Classification.Outside;
+
+            int planeCount = ToLocalPlanes(localToWorld, worldPlanes);
+            s_bufA.Load(mesh);
+            return ClipOutsideCore(planeCount, null, null, sink);
+        }
+
+        /// <summary>
+        /// Clips one element of a merged mesh, given as ranges of CPU arrays (normals / colours may be null),
+        /// against the planes prepared by <see cref="PrepareLocalPlanes"/>. Outside pieces go to <paramref name="sink"/>.
+        /// </summary>
+        internal static Classification ClipOutsideRange(Vector3[] positions, Vector3[] normals, Color32[] colors, int[] indices,
+                                                        int v0, int vn, int t0, int tn, int planeCount, IPieceSink sink)
+        {
+            s_bufA.LoadRange(positions, normals, colors, indices, v0, vn, t0, tn);
+            return ClipOutsideCore(planeCount, null, null, sink);
+        }
+
+        /// <summary>
+        /// Shared by the overloads: s_bufA holds the mesh; the local planes are ready. Piece_k = mesh ∩
+        /// inside(p1..p(k-1)) ∩ outside(pk).
+        /// </summary>
+        static Classification ClipOutsideCore(int planeCount, string name, List<Mesh> results, IPieceSink sink)
+        {
             MeshData cur = s_bufA, outside = s_bufB, inside = s_bufC;
-            cur.Load(mesh);
             bool cut = false;
             for (int i = 0; i < planeCount; i++)
             {
@@ -119,11 +166,11 @@ namespace Ion.Projection
                 {
                     // The whole remainder is outside this plane.
                     if (!cut) return Classification.Outside;
-                    results.Add(cur.ToMesh(mesh.name + " (cut " + i + ")"));
+                    Emit(cur, name, i, results, sink);
                     return Classification.Straddling;
                 }
 
-                results.Add(outside.ToMesh(mesh.name + " (cut " + i + ")"));
+                Emit(outside, name, i, results, sink);
                 cut = true;
 
                 PassResult r2 = ClipPass(cur, n, p.w, inside);
@@ -131,6 +178,37 @@ namespace Ion.Projection
                 if (r2 == PassResult.Clipped) (cur, inside) = (inside, cur);
             }
             return cut ? Classification.Straddling : Classification.Inside;
+        }
+
+        static void Emit(MeshData d, string name, int plane, List<Mesh> results, IPieceSink sink)
+        {
+            if (sink != null) sink.AddPiece(d.P, d.HasNormals ? d.N : null, d.HasColors ? d.C : null, d.T[0]);
+            else results.Add(d.ToMesh(name + " (cut " + plane + ")"));
+        }
+
+        /// <summary>
+        /// Prepares the world planes in the local space of <paramref name="localToWorld"/> for
+        /// <see cref="ClassifyLocalBounds"/> and <see cref="ClipOutsideRange"/>. Returns the plane count.
+        /// </summary>
+        internal static int PrepareLocalPlanes(Matrix4x4 localToWorld, Plane[] worldPlanes) => ToLocalPlanes(localToWorld, worldPlanes);
+
+        /// <summary>
+        /// Fast conservative classification of a local box against the planes prepared by
+        /// <see cref="PrepareLocalPlanes"/> (one centre/extent test per plane instead of eight transformed corners).
+        /// </summary>
+        internal static Classification ClassifyLocalBounds(Bounds b, int planeCount)
+        {
+            Vector3 c = b.center, e = b.extents;
+            bool allInside = true;
+            for (int i = 0; i < planeCount; i++)
+            {
+                Vector4 p = s_localPlanes[i];
+                float d = p.x * c.x + p.y * c.y + p.z * c.z + p.w;
+                float r = Mathf.Abs(p.x) * e.x + Mathf.Abs(p.y) * e.y + Mathf.Abs(p.z) * e.z;
+                if (d + r <= SideEpsilon) return Classification.Outside;
+                if (d - r < -SideEpsilon) allInside = false;
+            }
+            return allInside ? Classification.Inside : Classification.Straddling;
         }
 
         /// <summary>
@@ -209,6 +287,22 @@ namespace Ion.Projection
                 {
                     if (mesh.GetTopology(s) == MeshTopology.Triangles) mesh.GetTriangles(T[s], s, true);
                 }
+            }
+
+            /// <summary>Loads one element (vertex range + index range) of CPU arrays; indices are rebased to 0.</summary>
+            public void LoadRange(Vector3[] positions, Vector3[] normals, Color32[] colors, int[] indices, int v0, int vn, int t0, int tn)
+            {
+                Reset(1);
+                HasNormals = normals != null;
+                HasColors = colors != null && vn > 0;
+                for (int i = 0; i < vn; i++)
+                {
+                    P.Add(positions[v0 + i]);
+                    N.Add(HasNormals ? normals[v0 + i] : Vector3.zero);
+                }
+                if (HasColors) for (int i = 0; i < vn; i++) C.Add(colors[v0 + i]);
+                List<int> t = T[0];
+                for (int i = 0; i < tn; i++) t.Add(indices[t0 + i] - v0);
             }
 
             public bool HasTriangles()

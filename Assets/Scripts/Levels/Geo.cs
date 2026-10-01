@@ -223,6 +223,81 @@ namespace Ion.Levels
             }
         }
 
+        static Mesh s_Strip;
+
+        /// <summary>
+        /// Unit contact-shade strip (x, z ∈ [−0.5, 0.5], y ∈ [−0.5, 0.5]) for long props such as walls:
+        /// the top is darker along its centre line (x = 0) and fades to white across x and over the last
+        /// 10 % at both ends of z. Closed, with the side and bottom faces subdivided like the top, so cuts
+        /// cap it exactly.
+        /// </summary>
+        public static Mesh ContactStripMesh
+        {
+            get
+            {
+                if (s_Strip != null) return s_Strip;
+                float[] xs = { -0.5f, 0f, 0.5f };
+                float[] zs = { -0.5f, -0.4f, 0.4f, 0.5f };
+                var v = new List<Vector3>();
+                var nr = new List<Vector3>();
+                var c = new List<Color32>();
+                var t = new List<int>();
+                var white = new Color32(255, 255, 255, 255);
+                var dark = new Color32(196, 200, 210, 255);
+                for (int face = 0; face < 2; face++)
+                {
+                    float y = face == 0 ? 0.5f : -0.5f;
+                    Vector3 n = face == 0 ? Vector3.up : Vector3.down;
+                    int b = v.Count;
+                    for (int j = 0; j < zs.Length; j++)
+                    for (int i = 0; i < xs.Length; i++)
+                    {
+                        v.Add(new Vector3(xs[i], y, zs[j]));
+                        nr.Add(n);
+                        bool shade = face == 0 && i == 1 && j > 0 && j < zs.Length - 1;
+                        c.Add(shade ? dark : white);
+                    }
+                    for (int j = 0; j + 1 < zs.Length; j++)
+                    for (int i = 0; i + 1 < xs.Length; i++)
+                    {
+                        int p00 = b + j * xs.Length + i, p10 = p00 + 1, p01 = p00 + xs.Length, p11 = p01 + 1;
+                        if (face == 0) { t.Add(p00); t.Add(p11); t.Add(p10); t.Add(p00); t.Add(p01); t.Add(p11); }
+                        else { t.Add(p00); t.Add(p10); t.Add(p11); t.Add(p00); t.Add(p11); t.Add(p01); }
+                    }
+                }
+                // Sides, one quad per grid segment along the perimeter (rim shaded like the top: normal up).
+                void Side(Vector3 a, Vector3 bb, Vector3 outward)
+                {
+                    Vector3 a0 = new Vector3(a.x, -0.5f, a.z), a1 = new Vector3(bb.x, -0.5f, bb.z);
+                    Vector3 b0 = new Vector3(a.x, 0.5f, a.z), b1 = new Vector3(bb.x, 0.5f, bb.z);
+                    int s0 = v.Count;
+                    v.Add(a0); v.Add(a1); v.Add(b1); v.Add(b0);
+                    for (int k = 0; k < 4; k++) { nr.Add(Vector3.up); c.Add(white); }
+                    if (Vector3.Dot(Vector3.Cross(a1 - a0, b1 - a0), outward) > 0f) { t.Add(s0); t.Add(s0 + 1); t.Add(s0 + 2); t.Add(s0); t.Add(s0 + 2); t.Add(s0 + 3); }
+                    else { t.Add(s0); t.Add(s0 + 2); t.Add(s0 + 1); t.Add(s0); t.Add(s0 + 3); t.Add(s0 + 2); }
+                }
+                for (int j = 0; j + 1 < zs.Length; j++)
+                {
+                    Side(new Vector3(-0.5f, 0f, zs[j]), new Vector3(-0.5f, 0f, zs[j + 1]), Vector3.left);
+                    Side(new Vector3(0.5f, 0f, zs[j]), new Vector3(0.5f, 0f, zs[j + 1]), Vector3.right);
+                }
+                for (int i = 0; i + 1 < xs.Length; i++)
+                {
+                    Side(new Vector3(xs[i], 0f, -0.5f), new Vector3(xs[i + 1], 0f, -0.5f), Vector3.back);
+                    Side(new Vector3(xs[i], 0f, 0.5f), new Vector3(xs[i + 1], 0f, 0.5f), Vector3.forward);
+                }
+                var m = new Mesh { name = "Ion_ContactStrip" };
+                m.SetVertices(v);
+                m.SetNormals(nr);
+                m.SetColors(c);
+                m.SetTriangles(t, 0);
+                m.RecalculateBounds();
+                m.UploadMeshData(false);
+                s_Strip = m;
+                return m;
+            }
+        }
+
         /// <summary>Unit cone: n-gon base at y = −0.5 (radius 0.5), apex at y = +0.5.</summary>
         public static Mesh ConeMesh(int sides)
         {

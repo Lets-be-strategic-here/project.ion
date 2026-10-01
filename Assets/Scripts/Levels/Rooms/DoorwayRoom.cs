@@ -27,6 +27,9 @@ namespace Ion.Levels
 
             var shot = ctx.RegisterDioramaShot(Marker, 0f, 0f, "Open sky");
             BuildTerrain(ctx.DioramaRoot);
+            // The wall's contact shade is ground, not wall: the photo carries the same strip, so the
+            // pasted doorway floor continues it exactly (no step in the grass at the photo's edges).
+            WallContact(ctx.DioramaRoot);
             Kit.Cloud(ctx.DioramaRoot, new Vector3(3f, 8.5f, 27f), 1.2f);
             Kit.Cloud(ctx.DioramaRoot, new Vector3(-5f, 11f, 40f), 1.6f);
 
@@ -54,11 +57,18 @@ namespace Ion.Levels
             Kit.Rock(p, new Vector3(2.5f, 0f, 24f), 1.3f, 160f);
         }
 
+        /// <summary>Soft contact shade along the wall's foot (the island is 20 m wide), mostly under the skirt.</summary>
+        static void WallContact(Transform p)
+        {
+            Kit.ContactStrip(p, new Vector3(0f, 0f, 9f), 2.4f, 19.6f, 90f, LevelColors.Contact);
+        }
+
         static void BuildWall(Transform p)
         {
             Geo.Box(p, new Vector3(0f, 3.5f, 9f), new Vector3(24f, 7f, 1f), LevelColors.Wall).name = "Wall";
             Geo.Box(p, new Vector3(0f, 7.15f, 9f), new Vector3(24.6f, 0.3f, 1.4f), LevelColors.Trim).name = "WallCap";
             Geo.Box(p, new Vector3(0f, 0.2f, 9f), new Vector3(24.2f, 0.4f, 1.2f), Palette.Stone).name = "WallSkirt";
+            WallContact(p);
             Geo.Box(p, new Vector3(-12.3f, 3.7f, 9f), new Vector3(0.8f, 7.4f, 1.8f), LevelColors.Pier).name = "WallPier";
             Geo.Box(p, new Vector3(12.3f, 3.7f, 9f), new Vector3(0.8f, 7.4f, 1.8f), LevelColors.Pier).name = "WallPier";
             // Collider-less pilasters on both faces break up the long plain wall (cut with it by a photo).

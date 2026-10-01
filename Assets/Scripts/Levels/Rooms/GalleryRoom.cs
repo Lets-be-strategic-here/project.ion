@@ -18,6 +18,13 @@ namespace Ion.Levels
         public override string Intro => "Your photos hang here.";
 
         const float WallX = 9.5f;
+        // Off-white paper mat and a slightly warmer print area: lit like the walls (a bare frame no longer
+        // shows an unlit, stark white image).
+        static readonly Color PaperMat = new Color32(0xF5, 0xEF, 0xE4, 0xFF);
+        static readonly Color PaperPrint = new Color32(0xEA, 0xE1, 0xD2, 0xFF);
+        // An empty snapshot frame holds an "undeveloped" instant print: dark slate with a soft sheen band.
+        static readonly Color UndevelopedPrint = new Color32(0x3C, 0x42, 0x52, 0xFF);
+        static readonly Color UndevelopedSheen = new Color32(0x5A, 0x62, 0x76, 0xFF);
         static readonly float[] FrameZ = { 2f, 8f, 14f };
 
         public override void Build(Transform root, RoomContext ctx)
@@ -34,6 +41,7 @@ namespace Ion.Levels
                 float x = WallX * side;
                 Geo.Box(root, new Vector3(x, 2f, 8f), new Vector3(0.6f, 4f, 18f), LevelColors.Wall).name = "GalleryWall";
                 Geo.Box(root, new Vector3(x, 4.1f, 8f), new Vector3(0.9f, 0.2f, 18.4f), LevelColors.Trim).name = "GalleryWallCap";
+                Kit.ContactStrip(root, new Vector3(x, 0f, 8f), 2.8f, 20f, 0f, LevelColors.Contact);
 
                 float face = x - side * 0.3f;          // inner face of the wall
                 Quaternion readRot = Quaternion.LookRotation(new Vector3(side, 0f, 0f)); // forward points into the wall
@@ -41,13 +49,26 @@ namespace Ion.Levels
                 {
                     float z = FrameZ[i];
                     Geo.Box(root, new Vector3(face - side * 0.06f, 2.2f, z), new Vector3(0.12f, 2.1f, 3f), Palette.Wood).name = "Frame";
-                    Geo.Box(root, new Vector3(face - side * 0.1f, 2.2f, z), new Vector3(0.08f, 1.7f, 2.6f), Palette.White).name = "Canvas";
+                    Geo.Box(root, new Vector3(face - side * 0.1f, 2.2f, z), new Vector3(0.08f, 1.7f, 2.6f), PaperMat).name = "Canvas";
+                    // The print area behind the photo (what an empty frame shows): the snapshot wall
+                    // (n >= 3) shows a dark undeveloped instant print with a faint sheen until filled.
+                    bool snapshotFrame = n >= GalleryCurator.PreMade;
+                    Geo.Soft("Print", root, Geo.CubeMesh, new Vector3(face - side * 0.143f, 2.36f, z), Quaternion.identity,
+                             new Vector3(0.008f, 1.215f, 1.62f), snapshotFrame ? UndevelopedPrint : PaperPrint);
+                    if (snapshotFrame)
+                    {
+                        Geo.Soft("Sheen", root, Geo.CubeMesh, new Vector3(face - side * 0.147f, 2.68f, z), Quaternion.identity,
+                                 new Vector3(0.004f, 0.16f, 1.62f), UndevelopedSheen);
+                        Geo.Soft("Sheen", root, Geo.CubeMesh, new Vector3(face - side * 0.147f, 2.52f, z), Quaternion.identity,
+                                 new Vector3(0.004f, 0.05f, 1.62f), UndevelopedSheen);
+                    }
                     // The photo (filled in by GalleryCurator) and its caption on the mat.
                     var photo = GalleryCurator.CreatePhoto(root, new Vector3(face - side * 0.152f, 2.36f, z), readRot, 1.62f, 1.215f);
-                    var caption = ctx.Label(new Vector3(face - side * 0.16f, 1.55f, z), readRot, "", 22, Palette.Slate, 2.4f);
+                    var caption = ctx.Label(new Vector3(face - side * 0.16f, 1.55f, z), readRot, "", 28, Palette.Ink, 2.6f);
                     curator.Add(photo, caption.GetComponentInChildren<Text>());
                     // Little plinth light under each frame.
                     Geo.Box(root, new Vector3(face - side * 0.5f, 0.25f, z), new Vector3(0.6f, 0.5f, 1.2f), Palette.Cream).name = "Plinth";
+                    Kit.Contact(root, new Vector3(face - side * 0.5f, 0f, z), 1.3f, 1.9f, 0f, LevelColors.Contact);
                 }
             }
 
@@ -58,6 +79,8 @@ namespace Ion.Levels
             Geo.Box(root, new Vector3(3.5f, 0.45f, 8f), new Vector3(0.8f, 0.1f, 3f), Palette.Wood).name = "Bench";
             Geo.Box(root, new Vector3(3.5f, 0.2f, 7f), new Vector3(0.6f, 0.4f, 0.3f), Palette.DarkWood).name = "BenchLeg";
             Geo.Box(root, new Vector3(3.5f, 0.2f, 9f), new Vector3(0.6f, 0.4f, 0.3f), Palette.DarkWood).name = "BenchLeg";
+            Kit.Contact(root, new Vector3(-3.5f, 0f, 8f), 1.5f, 3.8f, 0f, LevelColors.Contact);
+            Kit.Contact(root, new Vector3(3.5f, 0f, 8f), 1.5f, 3.8f, 0f, LevelColors.Contact);
 
             // Greenery.
             Kit.Tree(root, new Vector3(-8f, 0f, -7f), 1.2f, 10f, true);
@@ -79,6 +102,8 @@ namespace Ion.Levels
             var spawn = ctx.Spawn;
             // The last teleporter brings the player back to the courtyard entrance and opens the end card
             // (Play again / View projects) behind the fade-to-white.
+            // The exit pad stands on the paved path: a path-coloured contact shade on top of it.
+            Kit.Contact(root, new Vector3(0f, 0.04f, 21f), 3.4f, 3.4f, 0f, LevelColors.PathStone);
             ctx.CreateTeleporter(new Vector3(0f, 0f, 21f), () =>
             {
                 var player = Ion.Gameplay.FirstPersonController.Current;
@@ -97,7 +122,7 @@ namespace Ion.Levels
     /// </summary>
     public sealed class GalleryCurator : MonoBehaviour
     {
-        const int PreMade = 3;
+        public const int PreMade = 3;
 
         readonly List<RawImage> _photos = new List<RawImage>();
         readonly List<Text> _captions = new List<Text>();
@@ -166,7 +191,7 @@ namespace Ion.Levels
                     // The newest snapshots, oldest of them first.
                     int first = Mathf.Max(0, _snapshots.Count - (_photos.Count - PreMade));
                     photo = first + k < _snapshots.Count ? _snapshots[first + k] : null;
-                    caption = photo != null ? "Room 4: your snapshot" : "Room 4: unused film";
+                    caption = photo != null ? "Your snapshot" : "Unused film";
                 }
                 Apply(i, photo, caption);
             }
@@ -175,12 +200,14 @@ namespace Ion.Levels
         void Apply(int i, PhotoData photo, string caption)
         {
             if (_captions[i] != null && _captions[i].text != caption) _captions[i].text = caption;
+            // An empty frame shows the lit paper print area behind the image (no unlit white rectangle).
+            bool show = photo != null && photo.Preview != null;
+            if (_photos[i].enabled != show) _photos[i].enabled = show;
             if (Hung[i] == photo && _photos[i].texture == (photo != null ? photo.Preview : null)) return;
             Hung[i] = photo;
             var img = _photos[i];
             img.texture = photo != null ? photo.Preview : null;
-            // An empty frame shows the bare mat.
-            img.color = photo != null && photo.Preview != null ? Color.white : new Color(0.93f, 0.91f, 0.86f, 1f);
+            img.color = Color.white;
         }
 
         /// <summary>A world-space photo (unlit RawImage on its own canvas), <paramref name="w"/> x <paramref name="h"/> metres.</summary>

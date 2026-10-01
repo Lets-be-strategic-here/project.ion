@@ -86,7 +86,14 @@ namespace Ion.Tests
 
             List<Sliceable> all = SliceablesUnderRoot();
             var pieces = all.FindAll(s => s.gameObject != wall);
-            Assert.AreEqual(4, pieces.Count, "a frame of four pieces around the hole");
+            // The cut pieces of one object are merged into one object (one element per convex piece);
+            // edit mode cooks every collider at once, so there is no separate "far" object either.
+            Assert.AreEqual(1, pieces.Count, "the wall's cut pieces are one object");
+            var elements = pieces[0].GetComponent<MeshElements>();
+            Assert.IsNotNull(elements, "a merged cut keeps an element table");
+            Assert.AreEqual(4, elements.Count, "a frame of four pieces around the hole");
+            for (int e = 0; e < elements.Count; e++)
+                Assert.Greater(TestGeometry.ElementVolume(elements, e), 1f, "every frame piece is a solid chunk");
             float volume = 0f;
             foreach (var p in pieces)
             {
@@ -248,13 +255,31 @@ namespace Ion.Tests
             _viewer.transform.rotation = Quaternion.Euler(0f, 0.0015f, 0f);
             _system.Place(EmptyPhoto(), _viewer, 0f);
 
+            // Cut pieces are merged per object (one element each), so count and measure elements.
             int live = 0;
             foreach (Sliceable s in SliceablesUnderRoot())
             {
                 if (!s.enabled) continue;
-                live++;
-                float thickness = ProjectionSystem.WorldThickness(s.GetComponent<MeshFilter>().sharedMesh, s.transform.localToWorldMatrix);
-                Assert.GreaterOrEqual(thickness, ProjectionSystem.MinPieceThickness, $"{s.name} is a {thickness * 1000f} mm sliver");
+                Matrix4x4 m = s.transform.localToWorldMatrix;
+                var el = s.GetComponent<MeshElements>();
+                if (el == null)
+                {
+                    live++;
+                    float thickness = ProjectionSystem.WorldThickness(s.GetComponent<MeshFilter>().sharedMesh, m);
+                    Assert.GreaterOrEqual(thickness, ProjectionSystem.MinPieceThickness, $"{s.name} is a {thickness * 1000f} mm sliver");
+                    continue;
+                }
+                Assert.IsTrue(el.EnsureData());
+                for (int e = 0; e < el.Count; e++)
+                {
+                    live++;
+                    var p = new List<Vector3>();
+                    var t = new List<int>();
+                    for (int i = 0; i < el.VertexCount[e]; i++) p.Add(el.Positions[el.VertexStart[e] + i]);
+                    for (int i = 0; i < el.IndexCount[e]; i++) t.Add(el.Indices[el.IndexStart[e] + i] - el.VertexStart[e]);
+                    float thickness = ProjectionSystem.WorldThickness(p, t, m);
+                    Assert.GreaterOrEqual(thickness, ProjectionSystem.MinPieceThickness, $"{s.name}[{e}] is a {thickness * 1000f} mm sliver");
+                }
             }
             Assert.AreEqual(4, live, "the frame around the hole is still four pieces");
         }

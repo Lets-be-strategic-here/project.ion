@@ -102,10 +102,30 @@ namespace Ion.Presentation
                 float pulse = 1f + 0.025f * Mathf.Sin((Time.unscaledTime - _shownAt) * 3.2f);
                 _ctaButton.localScale = new Vector3(pulse, pulse, 1f);
 
-                // Fit the card on short / narrow screens.
+                // Fit the card on short / narrow screens, and keep it clear of the settings card
+                // (bottom-right, shown together after Esc): move left and shrink when they would overlap.
                 Rect r = ((RectTransform)transform).rect;
                 float fit = Mathf.Min(1f, (r.height - 40f) / CardH, (r.width - 40f) / CardW);
-                if (fit > 0f) _card.localScale = new Vector3(fit, fit, 1f);
+                float x = 0f;
+                var settings = Ion.Presentation.Quality.SettingsPanel.Instance;
+                float reserve = settings != null ? settings.ReservedRight : 0f;
+                if (reserve > 0f && fit > 0f)
+                {
+                    const float gap = 20f;
+                    bool overlapX = r.width * 0.5f + CardW * fit * 0.5f > r.width - reserve - gap;
+                    bool overlapY = r.height * 0.5f - CardH * fit * 0.5f < settings.ReservedTop;
+                    if (overlapX && overlapY)
+                    {
+                        float avail = r.width - reserve - gap * 2f;
+                        fit = Mathf.Min(fit, avail / CardW);
+                        x = gap + avail * 0.5f - r.width * 0.5f;
+                    }
+                }
+                if (fit > 0f)
+                {
+                    _card.localScale = new Vector3(fit, fit, 1f);
+                    _card.anchoredPosition = new Vector2(x, 0f);
+                }
             }
             else
             {
@@ -121,7 +141,7 @@ namespace Ion.Presentation
             _group.alpha = Ion.Web.WebLinks.LoaderVisible ? 0f : 1f;
 
             // Dim panel (first child = content toggled by Update).
-            var dim = UIUtil.NewImage("Dim", root, UIUtil.WithAlpha(Palette.Ink, 0.74f));
+            var dim = UIUtil.NewImage("Dim", root, UIUtil.WithAlpha(Palette.Ink, 0.8f));
             UIUtil.Stretch(dim.rectTransform);
             dim.raycastTarget = true;
 
@@ -144,6 +164,13 @@ namespace Ion.Presentation
             _cta = UIUtil.NewText("Label", _ctaButton, "Click to play", 34, Palette.Ink, TextAnchor.MiddleCenter, FontStyle.Bold, false);
             UIUtil.Stretch(_cta.rectTransform);
             _ctaButton.sizeDelta = new Vector2(_cta.preferredWidth + 88f, 72f);
+
+            // The controls sit on their own dark card (like the Settings card), so bright world text or
+            // signs behind the dim never collide with them.
+            var listCard = UIUtil.NewImage("ControlsCard", card, UIUtil.WithAlpha(Palette.Ink, 0.88f), UIUtil.RoundedSprite, true);
+            UIUtil.Anchor(listCard.rectTransform, new Vector2(0.5f, 1f), new Vector2(0.5f, 1f), new Vector2(0f, -248f), new Vector2(560f, 452f));
+            listCard.pixelsPerUnitMultiplier = 0.8f;
+            listCard.raycastTarget = false;
 
             // Divider.
             var div = UIUtil.NewImage("Divider", card, UIUtil.WithAlpha(Palette.Cream, 0.25f));

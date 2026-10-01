@@ -26,6 +26,11 @@ namespace Ion.Projection
         public const int ExcludedLayerMask = (1 << PlayerLayer) | (1 << PhotoUILayer);
         /// <summary>Default preview width (pre-made photos). Snapshots pass a larger width (they fill more of the screen).</summary>
         public const int PreviewWidth = 768;
+        /// <summary>
+        /// Far plane of the preview render. Only cuts and captures stop at <see cref="MaxFar"/>; the photo
+        /// image also shows what lies beyond (the distant backdrop), like the player's own view.
+        /// </summary>
+        public const float PreviewFar = 1200f;
 
         // Pieces whose bounds are smaller than this in every dimension (local units) are dropped.
         const float MinPieceExtent = 1e-3f;
@@ -56,9 +61,9 @@ namespace Ion.Projection
         /// <summary>
         /// Cut pieces farther than this from the viewer's eye get their collider on the next frame
         /// (play mode only), spreading the cooking cost of a placement over two frames. Everything the
-        /// player stands on or can reach within a frame is well inside this radius.
+        /// player stands on (eye height 1.62 m) or can reach within a frame (~0.1 m) is well inside it.
         /// </summary>
-        public const float ImmediateColliderRadius = 6f;
+        public const float ImmediateColliderRadius = 3.5f;
 
         static ProjectionSystem s_instance;
         static bool s_quitting;
@@ -159,11 +164,13 @@ namespace Ion.Projection
             var photo = new PhotoData { FovY = fovY, Aspect = aspect, Label = label };
             Matrix4x4 captureInverse = Matrix4x4.TRS(pose.position, pose.rotation, Vector3.one).inverse;
 
-            Sliceable[] sliceables = FindObjectsByType<Sliceable>(FindObjectsSortMode.None);
-            for (int i = 0; i < sliceables.Length; i++)
+            List<Sliceable> sliceables = GatherSliceables();
+            for (int i = 0; i < sliceables.Count; i++)
             {
-                if (!TryGetCuttable(sliceables[i], out MeshFilter mf, out MeshRenderer mr)) continue;
+                Sliceable s = sliceables[i];
+                if (!TryGetCuttable(s, out MeshFilter mf, out MeshRenderer mr)) continue;
                 if (!GeometryUtility.TestPlanesAABB(_planes, mr.bounds)) continue;
+                if (IsInsideInteractable(s)) continue;
 
                 Matrix4x4 localToWorld = mf.transform.localToWorldMatrix;
                 Mesh inside = MeshClipper.ClipInside(mf.sharedMesh, localToWorld, _planes);
@@ -171,9 +178,6 @@ namespace Ion.Projection
                 if (IsSliver(inside, localToWorld)) { DestroyObject(inside); continue; }
 
                 bool collide = mf.TryGetComponent(out Collider _) && WantsCollider(inside, localToWorld);
-                // Cook the collision data now (load time / behind the shutter) so pasting is cheap.
-                if (collide) Physics.BakeMesh(inside.GetEntityId(), false, CookingOptions);
-
                 photo.Pieces.Add(new PhotoPiece
                 {
                     Name = mf.gameObject.name,
@@ -186,6 +190,13 @@ namespace Ion.Projection
                     Collide = collide,
                 });
             }
+            sliceables.Clear();
+
+            // Fewer, bigger pieces: one pasted object per material instead of one per captured object.
+            MergePhotoPieces(photo);
+            // Cook the collision data now (load time / behind the shutter) so pasting is cheap.
+            for (int i = 0; i < photo.Pieces.Count; i++)
+                if (photo.Pieces[i].Collide) Physics.BakeMesh(photo.Pieces[i].Mesh.GetEntityId(), false, CookingOptions);
 
             Interactable[] interactables = FindObjectsByType<Interactable>(FindObjectsSortMode.None);
             for (int i = 0; i < interactables.Length; i++)
@@ -219,7 +230,9 @@ namespace Ion.Projection
         /// Cuts the world outside-of-frustum (removing everything inside the viewer's photo frustum)
         /// and pastes the photo's contents, then pushes an undo record.
         /// </summary>
-        public void Place(PhotoData photo, Camera viewer, float rollDegrees)
+        public void Place(PhotoData photo, Camera viewer, float rollDegrees) => PlaceCore(photo, viewer, rollDegrees, true);
+
+        void PlaceCore(PhotoData photo, Camera viewer, float rollDegrees, bool raiseEvents)
         {
             if (photo == null || viewer == null) return;
             FlushDeferredColliders();
@@ -232,40 +245,63 @@ namespace Ion.Projection
             frustum.GetPlanes(_planes);
             var record = new PlacementRecord();
 
-            // 1. Replace every cut Sliceable by its outside pieces.
-            Sliceable[] sliceables = FindObjectsByType<Sliceable>(FindObjectsSortMode.None);
+            // 1. Replace every cut Sliceable by its outside pieces (merged into one object, or two when
+            //    the far pieces' collider can wait a frame).
+            List<Sliceable> sliceables = GatherSliceables();
             double findMs = _watch.Elapsed.TotalMilliseconds, clipMs = 0, colliderMs = 0;
             int clipped = 0;
             double slowMs = 0;
             string slowName = null;
-            for (int i = 0; i < sliceables.Length; i++)
+            for (int i = 0; i < sliceables.Count; i++)
             {
                 Sliceable s = sliceables[i];
                 if (!TryGetCuttable(s, out MeshFilter mf, out MeshRenderer mr)) continue;
                 if (!GeometryUtility.TestPlanesAABB(_planes, mr.bounds)) continue;
+                if (IsInsideInteractable(s)) continue;
 
                 _pieces.Clear();
                 Matrix4x4 localToWorld = mf.transform.localToWorldMatrix;
+                Mesh mesh = mf.sharedMesh;
                 double c0 = _watch.Elapsed.TotalMilliseconds;
 
-                // Merged decor: only the elements that straddle the frustum are clipped.
-                if (s.TryGetComponent(out MeshElements elements) && elements.Mesh == mf.sharedMesh &&
-                    elements.Count > 1 && mf.sharedMesh.subMeshCount == 1)
+                // Merged meshes: only the elements that straddle the frustum are clipped.
+                if (s.TryGetComponent(out MeshElements elements) && elements.Mesh == mesh &&
+                    elements.Count > 0 && mesh.subMeshCount == 1 && elements.EnsureData())
                 {
                     bool touched = CutByElements(s, mf, mr, elements, localToWorld, record, eye, canDefer,
                                                  ref cooked, ref deferred, ref colliderMs);
                     double tookE = _watch.Elapsed.TotalMilliseconds - c0;
                     clipMs += tookE;
-                    if (tookE > slowMs) { slowMs = tookE; slowName = mf.name + "/elements"; }
+                    if (tookE > slowMs) { slowMs = tookE; slowName = mf.name + "/" + elements.Count + " el"; }
                     if (touched) clipped++;
                     continue;
                 }
 
+                if (CanMerge(mesh))
+                {
+                    bool collide = s.TryGetComponent(out Collider _);
+                    _near.Reset();
+                    _far.Reset();
+                    _sink.Begin(_near, collide && canDefer ? _far : _near, localToWorld, eye);
+                    MeshClipper.Classification merged = MeshClipper.ClipOutsideInto(mesh, localToWorld, _planes, _sink);
+                    if (merged != MeshClipper.Classification.Outside)
+                    {
+                        clipped++;
+                        Hide(s, mr, record);
+                        SpawnMerged(mf, mr, _near, collide, false, record, ref cooked, ref deferred, ref colliderMs);
+                        SpawnMerged(mf, mr, _far, collide, true, record, ref cooked, ref deferred, ref colliderMs);
+                    }
+                    double tookM = _watch.Elapsed.TotalMilliseconds - c0;
+                    clipMs += tookM;
+                    if (tookM > slowMs) { slowMs = tookM; slowName = mf.name + "/" + mesh.GetIndexCount(0) / 3; }
+                    continue;
+                }
+
                 MeshClipper.Classification result =
-                    MeshClipper.ClipOutside(mf.sharedMesh, localToWorld, _planes, _pieces);
+                    MeshClipper.ClipOutside(mesh, localToWorld, _planes, _pieces);
                 double took = _watch.Elapsed.TotalMilliseconds - c0;
                 clipMs += took;
-                if (took > slowMs) { slowMs = took; slowName = mf.name + "/" + mf.sharedMesh.GetIndexCount(0) / 3; }
+                if (took > slowMs) { slowMs = took; slowName = mf.name + "/" + mesh.GetIndexCount(0) / 3; }
                 if (result == MeshClipper.Classification.Outside) continue;
                 clipped++;
 
@@ -293,6 +329,7 @@ namespace Ion.Projection
                 }
                 _pieces.Clear();
             }
+            sliceables.Clear();
             double cutMs = _watch.Elapsed.TotalMilliseconds;
 
             // 2. Remove Interactables inside the frustum.
@@ -336,11 +373,13 @@ namespace Ion.Projection
                                colliderMs.ToString("0.0") + " ms, cut total " + cutMs.ToString("0.0") + " ms, paste " +
                                (_watch.Elapsed.TotalMilliseconds - cutMs).ToString("0.0") + " ms, " +
                                photo.Pieces.Count + " pasted, cut colliders " + cooked + " now / " + deferred + " next frame";
-            Placed?.Invoke();
+            if (raiseEvents) Placed?.Invoke();
         }
 
         /// <summary>Undoes the most recent placement.</summary>
-        public void Rewind()
+        public void Rewind() => RewindCore(true);
+
+        void RewindCore(bool raiseEvents)
         {
             if (_undo.Count == 0) return;
             PlacementRecord record = _undo[_undo.Count - 1];
@@ -366,7 +405,125 @@ namespace Ion.Projection
             for (int i = 0; i < record.DisabledSliceables.Count; i++)
                 if (record.DisabledSliceables[i] != null) record.DisabledSliceables[i].enabled = true;
 
-            Rewound?.Invoke();
+            if (raiseEvents) Rewound?.Invoke();
+        }
+
+        /// <summary>
+        /// Runs the whole place / rewind path once on throwaway geometry 3 km below the world, silently (no
+        /// events, no undo entry left). Call at load time: the first real placement then does not pay the
+        /// one-time costs of the cut / merge / cook / paste code paths (~10 ms of the first click on a slow
+        /// laptop in the Web player).
+        /// </summary>
+        public void WarmUp()
+        {
+            if (!Application.isPlaying) return;
+            var root = new GameObject("ProjectionWarmUp").transform;
+            root.position = new Vector3(0f, -3000f, 0f);
+            var meshes = new List<Mesh>();
+            // Grow the scratch buffers to their working size now (merged decor runs to a few thousand
+            // vertices): growing the heap during the first click was a few ms of it.
+            _near.Reserve(16384, 32768);
+            _far.Reserve(8192, 16384);
+            _photoMerger.Reserve(16384, 32768);
+            try
+            {
+                // A plain box (whole-mesh path) and a two-element merged mesh (element path), 6 m ahead;
+                // the frustum cuts through both.
+                Mesh box = WarmUpBox(Vector3.zero, Vector3.one * 2f);
+                meshes.Add(box);
+                var boxGo = new GameObject("WarmUpBox");
+                boxGo.transform.SetParent(root, false);
+                boxGo.transform.localPosition = new Vector3(0.9f, 0f, 6f);
+                AddGeometry(boxGo, box, new Material[0], ShadowCastingMode.Off, false);
+                boxGo.AddComponent<MeshCollider>().sharedMesh = box;
+
+                _photoMerger.Reset();
+                Mesh a = WarmUpBox(new Vector3(-1.4f, 0f, 6f), Vector3.one), b = WarmUpBox(new Vector3(-6f, 0f, 6f), Vector3.one);
+                meshes.Add(a);
+                meshes.Add(b);
+                _photoMerger.AddTransformed(a.vertices, a.normals, a.colors32, a.GetIndices(0), Matrix4x4.identity);
+                _photoMerger.AddTransformed(b.vertices, b.normals, b.colors32, b.GetIndices(0), Matrix4x4.identity);
+                Mesh merged = _photoMerger.Build("WarmUpMerged", out Vector3[] mp, out Vector3[] mn, out Color32[] mc, out int[] mt);
+                meshes.Add(merged);
+                var mergedGo = new GameObject("WarmUpMerged");
+                mergedGo.transform.SetParent(root, false);
+                AddGeometry(mergedGo, merged, new Material[0], ShadowCastingMode.Off, false);
+                mergedGo.AddComponent<MeshCollider>().sharedMesh = merged;
+                _photoMerger.ApplyTo(mergedGo.AddComponent<MeshElements>(), merged, mp, mn, mc, mt);
+
+                // A photo with one merged piece (paste path, pre-baked collider).
+                _photoMerger.Reset();
+                _photoMerger.AddTransformed(a.vertices, a.normals, a.colors32, a.GetIndices(0), Matrix4x4.identity);
+                Mesh pasteMesh = _photoMerger.Build("WarmUpPhoto", out Vector3[] pp, out Vector3[] pn, out Color32[] pc, out int[] pt);
+                meshes.Add(pasteMesh);
+                _photoMerger.GetTable(out int[] v0, out int[] vn, out int[] t0, out int[] tn, out Bounds[] eb);
+                _photoMerger.Reset();
+                Physics.BakeMesh(pasteMesh.GetEntityId(), false, CookingOptions);
+                var photo = new PhotoData { FovY = 30f, Aspect = 1f, Label = "warm-up" };
+                photo.Pieces.Add(new PhotoPiece
+                {
+                    Name = "WarmUp", Mesh = pasteMesh, Materials = new Material[0], Relative = Matrix4x4.identity,
+                    Layer = 0, ShadowCasting = ShadowCastingMode.Off, Collide = true,
+                    Elements = new PieceElements
+                    {
+                        VertexStart = v0, VertexCount = vn, IndexStart = t0, IndexCount = tn, Bounds = eb,
+                        Positions = pp, Normals = pn, Colors = pc, Indices = pt,
+                    },
+                });
+
+                var camGo = new GameObject("WarmUpViewer");
+                camGo.transform.SetParent(root, false);
+                var cam = camGo.AddComponent<Camera>();
+                cam.enabled = false;
+                int before = _undo.Count;
+                PlaceCore(photo, cam, 0f, false);
+                FlushDeferredColliders();
+                if (_undo.Count > before) RewindCore(false);
+            }
+            catch (System.Exception e)
+            {
+                Debug.LogWarning("ProjectionSystem: warm-up failed (" + e.Message + ").");
+            }
+            finally
+            {
+                _lastPasted.Clear();
+                LastPlaceProfile = string.Empty;
+                DestroyObject(root.gameObject);
+                for (int i = 0; i < meshes.Count; i++) if (meshes[i] != null) DestroyObject(meshes[i]);
+            }
+        }
+
+        /// <summary>A closed box mesh with normals and white vertex colours (warm-up geometry).</summary>
+        static Mesh WarmUpBox(Vector3 c, Vector3 size)
+        {
+            var p = new List<Vector3>(24);
+            var n = new List<Vector3>(24);
+            var t = new List<int>(36);
+            Vector3 e = size * 0.5f;
+            Vector3[] axes = { Vector3.right, Vector3.up, Vector3.forward };
+            for (int a = 0; a < 3; a++)
+            for (int sgn = -1; sgn <= 1; sgn += 2)
+            {
+                Vector3 nn = axes[a] * sgn, u = axes[(a + 1) % 3], v = axes[(a + 2) % 3];
+                if (sgn < 0) (u, v) = (v, u);
+                int i0 = p.Count;
+                Vector3 fc = c + Vector3.Scale(nn, e);
+                Vector3 du = Vector3.Scale(u, e), dv = Vector3.Scale(v, e);
+                p.Add(fc - du - dv); p.Add(fc - du + dv); p.Add(fc + du + dv); p.Add(fc + du - dv);
+                for (int k = 0; k < 4; k++) n.Add(nn);
+                // Front face normal = cross(b - a, c - a) must be nn.
+                if (Vector3.Dot(Vector3.Cross(p[i0 + 1] - p[i0], p[i0 + 2] - p[i0]), nn) > 0f) { t.Add(i0); t.Add(i0 + 1); t.Add(i0 + 2); t.Add(i0); t.Add(i0 + 2); t.Add(i0 + 3); }
+                else { t.Add(i0); t.Add(i0 + 2); t.Add(i0 + 1); t.Add(i0); t.Add(i0 + 3); t.Add(i0 + 2); }
+            }
+            var colors = new List<Color32>(24);
+            for (int i = 0; i < p.Count; i++) colors.Add(new Color32(255, 255, 255, 255));
+            var m = new Mesh { name = "WarmUpBox" };
+            m.SetVertices(p);
+            m.SetNormals(n);
+            m.SetColors(colors);
+            m.SetTriangles(t, 0);
+            m.RecalculateBounds();
+            return m;
         }
 
         /// <summary>Forgets all placements without undoing them (e.g. when a level is rebuilt).</summary>
@@ -381,148 +538,249 @@ namespace Ion.Projection
             return PhotoFrustum.FromCamera(viewer, photo.FovY, photo.Aspect, rollDegrees, HoldNear, MaxFar);
         }
 
-        // ------------------------------------------------------------------ merged decor
+        // ------------------------------------------------------------------ merged cuts
 
-        static readonly List<Vector3> s_elemP = new List<Vector3>(4096), s_elemN = new List<Vector3>(4096);
-        static readonly List<Color32> s_elemC = new List<Color32>(4096);
-        static readonly List<int> s_elemT = new List<int>(8192);
-        static readonly List<Vector3> s_outP = new List<Vector3>(4096), s_outN = new List<Vector3>(4096);
-        static readonly List<Color32> s_outC = new List<Color32>(4096);
-        static readonly List<int> s_outT = new List<int>(8192);
+        readonly PieceMerger _near = new PieceMerger(), _far = new PieceMerger(), _photoMerger = new PieceMerger();
+        readonly CutSink _sink = new CutSink();
         readonly List<int> _keep = new List<int>(256), _straddle = new List<int>(64);
+        readonly List<Sliceable> _sliceables = new List<Sliceable>(4096);
 
         /// <summary>
-        /// Cuts a merged mesh element by element: elements whose bounds miss the frustum are copied into one
-        /// "kept" piece (which keeps its element table, so the next cut is fast too), elements inside are
-        /// dropped, and only the straddling ones go through <see cref="MeshClipper"/>. Same result as clipping
-        /// the whole mesh (elements are closed and independent), a fraction of the work. Returns false if the
-        /// object was not touched.
+        /// Routes the outside pieces of a cut into a merger: drops crumbs and slivers, and sends pieces
+        /// beyond <see cref="ImmediateColliderRadius"/> to the "far" merger (collider next frame).
+        /// </summary>
+        sealed class CutSink : MeshClipper.IPieceSink
+        {
+            PieceMerger _near, _far;
+            Matrix4x4 _localToWorld;
+            Vector3 _eye;
+            public bool AnyNear;
+
+            public void Begin(PieceMerger near, PieceMerger far, Matrix4x4 localToWorld, Vector3 eye)
+            {
+                _near = near;
+                _far = far;
+                _localToWorld = localToWorld;
+                _eye = eye;
+                AnyNear = false;
+            }
+
+            public void AddPiece(List<Vector3> p, List<Vector3> n, List<Color32> c, List<int> t)
+            {
+                int count = p.Count;
+                if (count < 3 || t.Count < 3) return;
+                Vector3 min = p[0], max = p[0];
+                for (int i = 1; i < count; i++)
+                {
+                    Vector3 v = p[i];
+                    if (v.x < min.x) min.x = v.x; else if (v.x > max.x) max.x = v.x;
+                    if (v.y < min.y) min.y = v.y; else if (v.y > max.y) max.y = v.y;
+                    if (v.z < min.z) min.z = v.z; else if (v.z > max.z) max.z = v.z;
+                }
+                Vector3 size = max - min;
+                if (size.x < MinPieceExtent && size.y < MinPieceExtent && size.z < MinPieceExtent) return;
+                if (WorldThickness(p, t, _localToWorld) < MinPieceThickness) return;
+                var b = new Bounds();
+                b.SetMinMax(min, max);
+                bool near = WorldBounds(b, _localToWorld).SqrDistance(_eye) <= ImmediateColliderRadius * ImmediateColliderRadius;
+                if (near) AnyNear = true;
+                (near || _far == _near ? _near : _far).AddPiece(p, n, c, t, b);
+            }
+        }
+
+        /// <summary>Meshes the merged cut path handles: readable, one triangle submesh, with normals.</summary>
+        static bool CanMerge(Mesh mesh) =>
+            mesh.isReadable && mesh.subMeshCount == 1 && mesh.GetTopology(0) == MeshTopology.Triangles &&
+            mesh.HasVertexAttribute(VertexAttribute.Normal);
+
+        /// <summary>
+        /// Spawns the merged pieces of <paramref name="merger"/> as one cut object (with an element table).
+        /// <paramref name="far"/>: its collider is cooked next frame (play mode).
+        /// </summary>
+        void SpawnMerged(MeshFilter mf, MeshRenderer mr, PieceMerger merger, bool collide, bool far, PlacementRecord record,
+                         ref int cooked, ref int deferred, ref double colliderMs)
+        {
+            if (merger.ElementCount == 0) return;
+            Mesh mesh = merger.Build(mf.sharedMesh.name + " (cut)", out Vector3[] p, out Vector3[] n, out Color32[] c, out int[] t);
+            if (mesh == null) return;
+            record.OwnedMeshes.Add(mesh);
+            GameObject go = SpawnCutPiece(mf, mr, mesh, out bool wantsCollider);
+            merger.ApplyTo(go.AddComponent<MeshElements>(), mesh, p, n, c, t);
+            record.Spawned.Add(go);
+            if (!collide || !wantsCollider) return;
+            if (far)
+            {
+                _deferredColliders.Add(go);
+                deferred++;
+            }
+            else
+            {
+                double k0 = _watch.Elapsed.TotalMilliseconds;
+                AddCollider(go, mesh);
+                colliderMs += _watch.Elapsed.TotalMilliseconds - k0;
+                cooked++;
+            }
+        }
+
+        /// <summary>
+        /// Cuts a merged mesh element by element: elements whose bounds miss the frustum are kept as they
+        /// are (same vertex buffer, their indices copied), elements inside are dropped, and only the
+        /// straddling ones go through <see cref="MeshClipper"/>, their outside pieces appended as new
+        /// elements. Everything left becomes one object. Same result as clipping the whole mesh (elements
+        /// are closed and independent), a fraction of the work. Returns false if the object was not touched.
         /// </summary>
         bool CutByElements(Sliceable s, MeshFilter mf, MeshRenderer mr, MeshElements el, Matrix4x4 localToWorld,
                            PlacementRecord record, Vector3 eye, bool canDefer, ref int cooked, ref int deferred, ref double colliderMs)
         {
+            int planeCount = MeshClipper.PrepareLocalPlanes(localToWorld, _planes);
             _keep.Clear();
             _straddle.Clear();
             bool removed = false;
-            for (int i = 0; i < el.Count; i++)
+            Bounds[] bounds = el.Bounds;
+            for (int i = 0; i < bounds.Length; i++)
             {
-                switch (MeshClipper.ClassifyBounds(el.Bounds[i], localToWorld, _planes))
+                switch (MeshClipper.ClassifyLocalBounds(bounds[i], planeCount))
                 {
                     case MeshClipper.Classification.Outside: _keep.Add(i); break;
                     case MeshClipper.Classification.Inside: removed = true; break;
-                    default: _straddle.Add(i); removed = true; break;
+                    default: _straddle.Add(i); break;
                 }
             }
-            if (!removed) return false;
+            if (!removed && _straddle.Count == 0) return false;
+
+            bool collide = s.TryGetComponent(out Collider _);
+            Vector3[] P = el.Positions, N = el.Normals;
+            Color32[] C = el.Colors;
+            int[] T = el.Indices;
+            _near.BeginShared(P, N, C);
+            _sink.Begin(_near, _near, localToWorld, eye);
+            bool near = !canDefer;
+            for (int k = 0; k < _keep.Count; k++)
+            {
+                int e = _keep[k];
+                _near.AddExistingElement(T, el.VertexStart[e], el.VertexCount[e], el.IndexStart[e], el.IndexCount[e], bounds[e]);
+                if (collide && !near)
+                    near = WorldBounds(bounds[e], localToWorld).SqrDistance(eye) <= ImmediateColliderRadius * ImmediateColliderRadius;
+            }
+            bool changed = removed;
+            for (int k = 0; k < _straddle.Count; k++)
+            {
+                int e = _straddle[k];
+                MeshClipper.Classification r = MeshClipper.ClipOutsideRange(P, N, C, T, el.VertexStart[e], el.VertexCount[e],
+                    el.IndexStart[e], el.IndexCount[e], planeCount, _sink);
+                if (r == MeshClipper.Classification.Outside)
+                {
+                    // Conservative bounds: nothing actually inside, keep it whole.
+                    _near.AddExistingElement(T, el.VertexStart[e], el.VertexCount[e], el.IndexStart[e], el.IndexCount[e], bounds[e]);
+                    if (collide && !near)
+                        near = WorldBounds(bounds[e], localToWorld).SqrDistance(eye) <= ImmediateColliderRadius * ImmediateColliderRadius;
+                }
+                else
+                {
+                    changed = true;
+                }
+            }
+            if (!changed)
+            {
+                _near.Reset();
+                return false;
+            }
+            near |= _sink.AnyNear;
 
             Hide(s, mr, record);
-            Mesh src = mf.sharedMesh;
-            src.GetVertices(s_elemP);
-            src.GetNormals(s_elemN);
-            src.GetColors(s_elemC);
-            src.GetIndices(s_elemT, 0);
-            bool hasN = s_elemN.Count == s_elemP.Count, hasC = s_elemC.Count == s_elemP.Count;
-            bool collide = s.TryGetComponent(out Collider _);
-
-            if (_keep.Count > 0)
-            {
-                Mesh kept = BuildElementMesh(src.name + " (kept)", el, _keep, hasN, hasC,
-                    out int[] v0, out int[] vn, out int[] t0, out int[] tn, out Bounds[] b);
-                record.OwnedMeshes.Add(kept);
-                GameObject go = SpawnCutPiece(mf, mr, kept, out bool wantsCollider);
-                go.AddComponent<MeshElements>().Set(kept, v0, vn, t0, tn, b);
-                record.Spawned.Add(go);
-                if (collide && wantsCollider)
-                {
-                    bool near = !canDefer;
-                    for (int i = 0; i < b.Length && !near; i++)
-                        near = WorldBounds(b[i], localToWorld).SqrDistance(eye) <= ImmediateColliderRadius * ImmediateColliderRadius;
-                    if (near)
-                    {
-                        double k0 = _watch.Elapsed.TotalMilliseconds;
-                        AddCollider(go, kept);
-                        colliderMs += _watch.Elapsed.TotalMilliseconds - k0;
-                        cooked++;
-                    }
-                    else
-                    {
-                        _deferredColliders.Add(go);
-                        deferred++;
-                    }
-                }
-            }
-
-            if (_straddle.Count > 0)
-            {
-                Mesh part = BuildElementMesh(src.name, el, _straddle, hasN, hasC, out _, out _, out _, out _, out _);
-                _pieces.Clear();
-                MeshClipper.Classification result = MeshClipper.ClipOutside(part, localToWorld, _planes, _pieces);
-                if (result == MeshClipper.Classification.Outside)
-                {
-                    _pieces.Add(part); // conservative bounds: nothing actually inside, keep it whole
-                    part = null;
-                }
-                for (int p = 0; p < _pieces.Count; p++)
-                {
-                    Mesh piece = _pieces[p];
-                    if (IsSliver(piece, localToWorld)) { DestroyObject(piece); continue; }
-                    record.OwnedMeshes.Add(piece);
-                    GameObject cut = SpawnCutPiece(mf, mr, piece, out bool wantsCollider);
-                    record.Spawned.Add(cut);
-                    if (!collide || !wantsCollider) continue;
-                    if (canDefer && !IsNear(piece, cut.transform.localToWorldMatrix, eye))
-                    {
-                        _deferredColliders.Add(cut);
-                        deferred++;
-                    }
-                    else
-                    {
-                        double k0 = _watch.Elapsed.TotalMilliseconds;
-                        AddCollider(cut, piece);
-                        colliderMs += _watch.Elapsed.TotalMilliseconds - k0;
-                        cooked++;
-                    }
-                }
-                _pieces.Clear();
-                if (part != null) DestroyObject(part);
-            }
-
-            s_elemP.Clear(); s_elemN.Clear(); s_elemC.Clear(); s_elemT.Clear();
+            SpawnMerged(mf, mr, _near, collide, !near, record, ref cooked, ref deferred, ref colliderMs);
+            _near.Reset();
             return true;
         }
 
-        /// <summary>Copies the listed elements (from the s_elem* buffers) into a new mesh with its own element table.</summary>
-        static Mesh BuildElementMesh(string name, MeshElements el, List<int> which, bool hasN, bool hasC,
-                                     out int[] v0, out int[] vn, out int[] t0, out int[] tn, out Bounds[] bounds)
+        /// <summary>
+        /// Merges a capture's pieces that draw alike (one material, layer, shadow settings, collider or not)
+        /// into one piece each, in capture space, with an element table. Pieces with several submeshes or
+        /// object-space foliage sway stay separate.
+        /// </summary>
+        void MergePhotoPieces(PhotoData photo)
         {
-            s_outP.Clear(); s_outN.Clear(); s_outC.Clear(); s_outT.Clear();
-            int n = which.Count;
-            v0 = new int[n]; vn = new int[n]; t0 = new int[n]; tn = new int[n];
-            bounds = new Bounds[n];
-            for (int k = 0; k < n; k++)
+            List<PhotoPiece> pieces = photo.Pieces;
+            if (pieces.Count < 2) return;
+            var groups = new List<List<PhotoPiece>>();
+            var result = new List<PhotoPiece>(pieces.Count);
+            for (int i = 0; i < pieces.Count; i++)
             {
-                int e = which[k];
-                int vs = el.VertexStart[e], vc = el.VertexCount[e], ts = el.IndexStart[e], tc = el.IndexCount[e];
-                int baseV = s_outP.Count;
-                v0[k] = baseV; vn[k] = vc; t0[k] = s_outT.Count; tn[k] = tc;
-                bounds[k] = el.Bounds[e];
-                for (int i = 0; i < vc; i++)
-                {
-                    s_outP.Add(s_elemP[vs + i]);
-                    if (hasN) s_outN.Add(s_elemN[vs + i]);
-                    if (hasC) s_outC.Add(s_elemC[vs + i]);
-                }
-                int shift = baseV - vs;
-                for (int i = 0; i < tc; i++) s_outT.Add(s_elemT[ts + i] + shift);
+                PhotoPiece p = pieces[i];
+                if (!Mergeable(p)) { result.Add(p); continue; }
+                List<PhotoPiece> g = null;
+                for (int k = 0; k < groups.Count && g == null; k++)
+                    if (SameLook(groups[k][0], p)) g = groups[k];
+                if (g == null) groups.Add(g = new List<PhotoPiece>(4));
+                g.Add(p);
             }
-            var mesh = new Mesh { name = name };
-            if (s_outP.Count > 65535) mesh.indexFormat = UnityEngine.Rendering.IndexFormat.UInt32;
-            mesh.SetVertices(s_outP);
-            if (hasN) mesh.SetNormals(s_outN);
-            if (hasC) mesh.SetColors(s_outC);
-            mesh.SetTriangles(s_outT, 0, true);
-            if (!hasN) mesh.RecalculateNormals();
-            return mesh;
+
+            for (int k = 0; k < groups.Count; k++)
+            {
+                List<PhotoPiece> g = groups[k];
+                if (g.Count == 1) { result.Add(g[0]); continue; }
+                _photoMerger.Reset();
+                for (int i = 0; i < g.Count; i++)
+                {
+                    Mesh m = g[i].Mesh;
+                    Vector3[] n = m.normals;
+                    Color32[] c = m.colors32;
+                    _photoMerger.AddTransformed(m.vertices, n.Length > 0 ? n : null, c.Length > 0 ? c : null, m.GetIndices(0), g[i].Relative);
+                }
+                Mesh merged = _photoMerger.Build("Photo " + g[0].Materials[0].name, out Vector3[] mp, out Vector3[] mn, out Color32[] mc, out int[] mt);
+                if (merged == null) { result.AddRange(g); continue; }
+                _photoMerger.GetTable(out int[] v0, out int[] vn, out int[] t0, out int[] tn, out Bounds[] b);
+                PhotoPiece first = g[0];
+                result.Add(new PhotoPiece
+                {
+                    Name = "Photo " + first.Materials[0].name,
+                    Mesh = merged,
+                    Materials = first.Materials,
+                    Relative = Matrix4x4.identity,
+                    Layer = first.Layer,
+                    ShadowCasting = first.ShadowCasting,
+                    ReceiveShadows = first.ReceiveShadows,
+                    Collide = first.Collide,
+                    Elements = new PieceElements
+                    {
+                        VertexStart = v0, VertexCount = vn, IndexStart = t0, IndexCount = tn, Bounds = b,
+                        Positions = mp, Normals = mn, Colors = mc, Indices = mt,
+                    },
+                });
+                for (int i = 0; i < g.Count; i++) DestroyObject(g[i].Mesh); // copied into the merged mesh
+            }
+            _photoMerger.Reset();
+            pieces.Clear();
+            pieces.AddRange(result);
+        }
+
+        static readonly int SwayId = Shader.PropertyToID("_Sway"), SwayFromColorId = Shader.PropertyToID("_SwayFromColor");
+
+        static bool Mergeable(PhotoPiece p)
+        {
+            if (p.Mesh == null || p.Materials == null || p.Materials.Length != 1 || p.Materials[0] == null) return false;
+            if (p.Mesh.subMeshCount != 1 || !p.Mesh.isReadable || p.Mesh.GetTopology(0) != MeshTopology.Triangles) return false;
+            Material m = p.Materials[0];
+            // Foliage that sways by object-space height would sway differently once merged into capture space.
+            if (m.HasProperty(SwayId) && m.GetFloat(SwayId) > 0f && !(m.HasProperty(SwayFromColorId) && m.GetFloat(SwayFromColorId) > 0.5f))
+                return false;
+            return true;
+        }
+
+        static bool SameLook(PhotoPiece a, PhotoPiece b) =>
+            a.Materials[0] == b.Materials[0] && a.Layer == b.Layer && a.ShadowCasting == b.ShadowCasting &&
+            a.ReceiveShadows == b.ReceiveShadows && a.Collide == b.Collide;
+
+        /// <summary>The Sliceables to consider: the live registry while playing, a scene search in edit mode.</summary>
+        List<Sliceable> GatherSliceables()
+        {
+            if (Sliceable.RegistryActive) Sliceable.CopyLive(_sliceables);
+            else
+            {
+                _sliceables.Clear();
+                _sliceables.AddRange(FindObjectsByType<Sliceable>(FindObjectsSortMode.None));
+            }
+            return _sliceables;
         }
 
         static Bounds WorldBounds(Bounds b, Matrix4x4 localToWorld)
@@ -534,6 +792,34 @@ namespace Ion.Projection
             return result;
         }
 
+        /// <summary>
+        /// <see cref="WorldThickness(Mesh, Matrix4x4)"/> for one piece given as buffers (one triangle list).
+        /// </summary>
+        internal static float WorldThickness(List<Vector3> p, List<int> t, Matrix4x4 localToWorld)
+        {
+            if (p.Count == 0) return 0f;
+            Vector3 r = p[0];
+            double volume = 0, area = 0;
+            for (int i = 0; i + 2 < t.Count; i += 3)
+            {
+                Vector3 a = p[t[i]] - r, b = p[t[i + 1]] - r, c = p[t[i + 2]] - r;
+                volume += Vector3.Dot(a, Vector3.Cross(b, c));
+                Vector3 e1 = localToWorld.MultiplyVector(b - a), e2 = localToWorld.MultiplyVector(c - a);
+                area += Vector3.Cross(e1, e2).magnitude;
+            }
+            return ThicknessFrom(volume, area, localToWorld);
+        }
+
+        static float ThicknessFrom(double volume, double area, Matrix4x4 m)
+        {
+            if (area <= 1e-12) return 0f;
+            double det = m.m00 * ((double)m.m11 * m.m22 - (double)m.m12 * m.m21)
+                       - m.m01 * ((double)m.m10 * m.m22 - (double)m.m12 * m.m20)
+                       + m.m02 * ((double)m.m10 * m.m21 - (double)m.m11 * m.m20);
+            double worldVolume = System.Math.Abs(volume / 6.0 * det);
+            return (float)(2.0 * worldVolume / (0.5 * area));
+        }
+
         // ------------------------------------------------------------------ helpers
 
         static bool IsExcludedLayer(int layer) => (ExcludedLayerMask & (1 << layer)) != 0;
@@ -541,6 +827,11 @@ namespace Ion.Projection
         // Explicit instead of isActiveAndEnabled, which is unreliable in edit mode (tests).
         static bool IsLive(Behaviour b) => b.enabled && b.gameObject.activeInHierarchy;
 
+        /// <summary>
+        /// Cheap checks (component cache): live, not on an excluded layer, has a mesh and an enabled
+        /// renderer. The "inside an Interactable" check is separate (<see cref="IsInsideInteractable"/>),
+        /// so it only runs for objects the frustum touches.
+        /// </summary>
         static bool TryGetCuttable(Sliceable s, out MeshFilter mf, out MeshRenderer mr)
         {
             mf = null;
@@ -548,11 +839,27 @@ namespace Ion.Projection
             if (s == null || !IsLive(s)) return false;
             GameObject go = s.gameObject;
             if (IsExcludedLayer(go.layer)) return false;
-            if (!go.TryGetComponent(out mf) || mf.sharedMesh == null) return false;
-            if (!go.TryGetComponent(out mr) || !mr.enabled) return false;
-            // Interactables are captured / removed whole, never cut.
-            if (s.GetComponentInParent<Interactable>(true) != null) return false;
-            return true;
+            mf = s.CachedFilter;
+            if (mf == null)
+            {
+                if (!go.TryGetComponent(out mf)) return false;
+                s.CachedFilter = mf;
+            }
+            if (mf.sharedMesh == null) return false;
+            mr = s.CachedRenderer;
+            if (mr == null)
+            {
+                if (!go.TryGetComponent(out mr)) return false;
+                s.CachedRenderer = mr;
+            }
+            return mr.enabled;
+        }
+
+        /// <summary>Interactables are captured / removed whole, never cut (cached per Sliceable).</summary>
+        static bool IsInsideInteractable(Sliceable s)
+        {
+            if (s.InInteractable < 0) s.InInteractable = (sbyte)(s.GetComponentInParent<Interactable>(true) != null ? 1 : 0);
+            return s.InInteractable > 0;
         }
 
         static readonly List<Vector3> s_measureVerts = new List<Vector3>(256);
@@ -597,13 +904,7 @@ namespace Ion.Projection
             }
             s_measureTris.Clear();
             s_measureVerts.Clear();
-            if (area <= 1e-12) return 0f;
-            Matrix4x4 m = localToWorld;
-            double det = m.m00 * ((double)m.m11 * m.m22 - (double)m.m12 * m.m21)
-                       - m.m01 * ((double)m.m10 * m.m22 - (double)m.m12 * m.m20)
-                       + m.m02 * ((double)m.m10 * m.m21 - (double)m.m11 * m.m20);
-            double worldVolume = System.Math.Abs(volume / 6.0 * det);
-            return (float)(2.0 * worldVolume / (0.5 * area));
+            return ThicknessFrom(volume, area, localToWorld);
         }
 
         void Hide(Sliceable s, MeshRenderer mr, PlacementRecord record)
@@ -648,6 +949,7 @@ namespace Ion.Projection
             t.SetPositionAndRotation(position, rotation);
             t.localScale = scale; // root is never moved or scaled, so local == world
             AddGeometry(go, piece.Mesh, piece.Materials, piece.ShadowCasting, piece.ReceiveShadows);
+            if (piece.Elements != null) piece.Elements.ApplyTo(go.AddComponent<MeshElements>(), piece.Mesh);
             // Pre-baked at capture (see Capture), so this does not cook.
             if (piece.Collide) AddCollider(go, piece.Mesh);
             return go;
@@ -856,7 +1158,7 @@ namespace Ion.Projection
             cam.fieldOfView = fovY;
             cam.aspect = aspect;
             cam.nearClipPlane = HoldNear;
-            cam.farClipPlane = MaxFar;
+            cam.farClipPlane = PreviewFar;
             cam.cullingMask = ~ExcludedLayerMask;
 
             var desc = new RenderTextureDescriptor(width, height, RenderTextureFormat.ARGB32, 24)

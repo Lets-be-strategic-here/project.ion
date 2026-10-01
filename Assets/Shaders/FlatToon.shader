@@ -3,7 +3,9 @@
 //  * banded main-light N.L (3-step ramp) multiplied by realtime main-light shadows
 //  * shadowed/unlit side tinted towards a cool blue/purple
 //  * gradient ambient (sky / equator / ground) from Atmosphere globals, SH fallback
-//  * fog: URP MixFog when a fog keyword is active, otherwise Atmosphere's global linear fog
+//  * aerial perspective (IonAtmosphere.hlsl): exponential distance fog towards the sky colour behind the
+//    point (golden horizon towards the sun, sun halo), denser far below the eye, capped below 1 so
+//    distant rooms stay soft silhouettes. Camera-relative, so diorama captures fog identically.
 //  * ShadowCaster + DepthOnly passes so the object casts shadows and writes depth
 //  * soft 3-band ramp (smoothstep edges), blue-slate shadow tint, faint sky-coloured rim light,
 //    no specular
@@ -20,7 +22,7 @@ Shader "Ion/FlatToon"
     Properties
     {
         _BaseColor ("Base Color", Color) = (1, 1, 1, 1)
-        _ShadowTint ("Shadow Tint (blue-lilac)", Color) = (0.73, 0.73, 0.84, 1)
+        _ShadowTint ("Shadow Tint (blue-lilac)", Color) = (0.65, 0.66, 0.8, 1)
         _RampSmooth ("Ramp Edge Softness", Range(0.001, 0.2)) = 0.06
         _MidBand ("Mid Band Level", Range(0, 1)) = 0.55
         _LitStrength ("Direct Light Strength", Range(0, 2)) = 0.65
@@ -34,6 +36,8 @@ Shader "Ion/FlatToon"
         _SwayFromColor ("Sway Weight From Vertex Alpha", Float) = 0
         _FaceJitter ("Per-face Colour Jitter", Range(0, 0.2)) = 0.035
         _GroundVar ("Ground Colour Variation", Range(0, 1)) = 0
+        _AoBoost ("Vertex AO Boost (Low tier)", Range(0, 2)) = 0
+        _TopLight ("Sunlit Top Highlight", Range(0, 1)) = 0
     }
 
     SubShader
@@ -67,10 +71,13 @@ Shader "Ion/FlatToon"
             float _SwayFromColor;
             half _FaceJitter;
             half _GroundVar;
+            half _AoBoost;
+            half _TopLight;
         CBUFFER_END
 
         // Global look switches, set by Ion.Presentation.Ambience:
-        // x = rim multiplier, y = sway multiplier, z = 1 when set (otherwise both default to 1).
+        // x = rim multiplier, y = sway multiplier, z = 1 when set (otherwise both default to 1),
+        // w = vertex-AO boost scale (1 on the Low tier, which has no realtime shadows; 0 otherwise).
         float4 _IonToonParams;
 
         // Object -> world with optional foliage sway. Cheap uniform branch when _Sway == 0.
@@ -111,18 +118,16 @@ Shader "Ion/FlatToon"
 
             #pragma multi_compile _ _MAIN_LIGHT_SHADOWS _MAIN_LIGHT_SHADOWS_CASCADE
             #pragma multi_compile_fragment _ _SHADOWS_SOFT _SHADOWS_SOFT_LOW _SHADOWS_SOFT_MEDIUM _SHADOWS_SOFT_HIGH
-            #pragma multi_compile_fog
             #pragma multi_compile_instancing
 
             #include "Packages/com.unity.render-pipelines.universal/ShaderLibrary/Lighting.hlsl"
+            #include "IonAtmosphere.hlsl"
 
             // Set by Ion.Presentation.Atmosphere (linear-space colours). If unset (all zero)
-            // ambient falls back to the SH probe and custom fog is disabled.
+            // ambient falls back to the SH probe and fog is disabled.
             float4 _IonAmbientSky;
             float4 _IonAmbientEquator;
             float4 _IonAmbientGround;
-            float4 _IonFogColor;
-            float4 _IonFogParams;   // x = start, y = 1 / (end - start), z = enabled (0/1)
 
             struct Attributes
             {
@@ -137,8 +142,7 @@ Shader "Ion/FlatToon"
                 float4 positionCS : SV_POSITION;
                 float3 positionWS : TEXCOORD0;
                 float3 normalWS   : TEXCOORD1;
-                half   fogFactor  : TEXCOORD2;
-                half3  color      : TEXCOORD3;
+                half3  color      : TEXCOORD2;
                 UNITY_VERTEX_INPUT_INSTANCE_ID
                 UNITY_VERTEX_OUTPUT_STEREO
             };
@@ -156,7 +160,6 @@ Shader "Ion/FlatToon"
                 output.positionCS = positionCS;
                 output.positionWS = positionWS;
                 output.normalWS = TransformObjectToWorldNormal(input.normalOS);
-                output.fogFactor = ComputeFogFactor(positionCS.z);
                 output.color = input.color.rgb;
                 return output;
             }
@@ -247,7 +250,11 @@ Shader "Ion/FlatToon"
                 half band = _MidBand * smoothstep(0.08h - s, 0.08h + s, lightTerm)
                           + (1.0h - _MidBand) * smoothstep(0.45h - s, 0.45h + s, lightTerm);
 
-                half3 albedo = IonDressAlbedo(_BaseColor.rgb * input.color, nF, input.positionWS);
+                // Vertex colour = baked tint / contact shade multiplier. On the Low tier (no realtime
+                // shadows) contact-shade materials deepen it so props still sit on the ground.
+                half aoBoost = _AoBoost * (half)_IonToonParams.w;
+                half3 vc = 1.0h - (1.0h - input.color) * (1.0h + aoBoost);
+                half3 albedo = IonDressAlbedo(_BaseColor.rgb * saturate(vc), nF, input.positionWS);
                 half3 ambient = GradientAmbient(n);
 
                 // Shade side: a soft blue-lilac (never black), only gently following the ambient
@@ -270,21 +277,14 @@ Shader "Ion/FlatToon"
                     color += skyCol * (fres * rimAmount * facing * (1.0h - 0.6h * band));
                 }
 
+                // Gentle warm highlight on sunlit tops (cloud crowns); no bloom involved.
+                if (_TopLight > 0.001h)
+                    color += mainLight.color * (_TopLight * saturate(n.y) * band);
+
                 color += _EmissionColor.rgb;
 
-                // URP fog when this variant has fog (static keyword, or dynamic_branch keywords on
-                // newer URP). If the fog variants were stripped from the build, fall back to the
-                // Atmosphere globals so the look stays identical.
-                #if defined(FOG_LINEAR_KEYWORD_DECLARED) || defined(FOG_LINEAR) || defined(FOG_EXP) || defined(FOG_EXP2)
-                    color = MixFog(color, input.fogFactor);
-                #else
-                    if (_IonFogParams.z > 0.5)
-                    {
-                        float dist = distance(input.positionWS, GetCameraPositionWS());
-                        half f = saturate((dist - _IonFogParams.x) * _IonFogParams.y);
-                        color = lerp(color, _IonFogColor.rgb, f);
-                    }
-                #endif
+                color = IonApplyFog(color, input.positionWS);
+                color = (half3)IonGrade(color, input.positionCS.xy);
 
                 return half4(color, 1.0h);
             }

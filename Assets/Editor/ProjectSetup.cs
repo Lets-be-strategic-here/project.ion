@@ -36,7 +36,7 @@ namespace Ion.EditorTools
         public const int PlayerLayer = 8;
         public const int PhotoUILayer = 9;
 
-        static readonly string[] RequiredShaders = { "Ion/FlatToon", "Ion/GradientSky", "Ion/PhotoDisplay", "Ion/AmbienceSoft" };
+        static readonly string[] RequiredShaders = { "Ion/FlatToon", "Ion/GradientSky", "Ion/PhotoDisplay", "Ion/AmbienceSoft", "Ion/Backdrop" };
         // Runtime fallbacks used by Presentation when an Ion shader is missing; cheap to include.
         static readonly string[] OptionalShaders = { "Universal Render Pipeline/Unlit" };
 
@@ -95,7 +95,10 @@ namespace Ion.EditorTools
             {
                 Debug.Log($"[Ion] Project not fully configured (URP={urpOk}, scene={sceneOk}); running setup.");
                 RunSetup();
+                return;
             }
+            // Cheap and idempotent: picks up shaders added under Assets/Shaders since the last setup.
+            if (Step("graphics settings", SetupGraphicsSettings) == 0) AssetDatabase.SaveAssets();
         }
 
         static int Step(string name, Action action)

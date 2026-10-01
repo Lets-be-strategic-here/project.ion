@@ -13,8 +13,10 @@ namespace Ion.Presentation
     {
         const float GlowAngle = 26f;   // full angular size of the glow (degrees)
         const float HaloAngle = 64f;   // outer halo (High only)
-        static readonly Color k_GlowColor = new Color(1f, 0.90f, 0.72f, 0.55f);
-        static readonly Color k_HaloColor = new Color(1f, 0.86f, 0.74f, 0.16f);
+        // Golden (Atmosphere.SunHaloColor): additive on a bright horizon, so it is kept saturated and a
+        // little weaker, or the sum reads as cool white.
+        static readonly Color k_GlowColor = new Color(1f, 0.78f, 0.5f, 0.42f);
+        static readonly Color k_HaloColor = new Color(1f, 0.76f, 0.52f, 0.15f);
 
         static Mesh s_Quad;
 

@@ -77,18 +77,20 @@ namespace Ion.Tests
                 var pieces = new List<GameObject>();
                 foreach (var s in Object.FindObjectsByType<Sliceable>(FindObjectsSortMode.None))
                     if (s.gameObject != go && s.name.StartsWith("Decor merged")) pieces.Add(s.gameObject);
-                Assert.Greater(pieces.Count, 1, "a kept piece plus the clipped remains of the straddling cube");
+                // Kept elements and the clipped remains of the straddling cube are merged into one object.
+                Assert.AreEqual(1, pieces.Count, "one object replaces the merged original");
 
-                MeshElements kept = null;
-                foreach (var piece in pieces)
-                    if (piece.TryGetComponent(out MeshElements e)) kept = e;
-                Assert.IsNotNull(kept, "the untouched elements keep an element table");
-                Assert.AreEqual(1, kept.Count, "only the far cube is copied whole");
-                Assert.AreEqual(1f, TestGeometry.SignedVolume(kept.Mesh), 1e-3f);
+                MeshElements kept = pieces[0].GetComponent<MeshElements>();
+                Assert.IsNotNull(kept, "the result keeps an element table");
+                Assert.AreEqual(2, kept.Count, "the far cube (whole) plus the outside part of the straddling cube");
+                // The far cube is kept verbatim: same vertex range, same bounds, its full volume.
+                Assert.AreEqual(v0[2], kept.VertexStart[0]);
+                Assert.AreEqual(vn[2], kept.VertexCount[0]);
+                Assert.AreEqual(bounds[2], kept.Bounds[0]);
+                Assert.AreEqual(1f, TestGeometry.ElementVolume(kept, 0), 1e-3f);
                 Assert.IsNotNull(kept.GetComponent<MeshCollider>(), "edit mode cooks every collider immediately");
 
-                float total = 0f;
-                foreach (var piece in pieces) total += TestGeometry.SignedVolume(piece.GetComponent<MeshFilter>().sharedMesh);
+                float total = TestGeometry.SignedVolume(kept.Mesh);
                 Assert.Less(total, 2f - 0.05f, "part of the straddling cube was cut away");
                 Assert.Greater(total, 1.05f, "the outside part of the straddling cube remains");
 

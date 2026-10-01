@@ -186,8 +186,27 @@ namespace Ion.Presentation
             SetFloat(m, "_RampSmooth", 0.1f);
             SetFloat(m, "_RimStrength", 0.35f);
             SetColor(m, "_EmissionColor", new Color(0.05f, 0.045f, 0.04f, 1f));
+            SetFloat(m, "_TopLight", 0.22f); // warm golden-hour crowns (no bloom)
             return m;
         }
+
+        static Material s_PhotoCloud;
+
+        /// <summary>
+        /// The cloud look for sliceable clouds built into rooms / dioramas (Kit.Cloud), so a cloud pasted
+        /// from a photo is shaded like the drifting ones. Shared; do not modify.
+        /// </summary>
+        public static Material SharedCloudMaterial
+        {
+            get
+            {
+                if (s_PhotoCloud == null) s_PhotoCloud = CreateCloudMaterial("Ion_Cloud_Photo", Palette.White);
+                return s_PhotoCloud;
+            }
+        }
+
+        [RuntimeInitializeOnLoadMethod(RuntimeInitializeLoadType.SubsystemRegistration)]
+        static void ResetStatics() => s_PhotoCloud = null;
 
         static void SetColor(Material m, string p, Color c) { if (m.HasProperty(p)) m.SetColor(p, c); }
         static void SetFloat(Material m, string p, float v) { if (m.HasProperty(p)) m.SetFloat(p, v); }

@@ -134,13 +134,38 @@ namespace Ion.Levels
 
         /// <summary>
         /// Contact shading under a prop: a grass-coloured disc darkening toward its centre (radial
-        /// gradient in the disc mesh's vertex colours, so its rim is invisible). Works with shadows off.
+        /// gradient in the disc mesh's vertex colours, so its rim is invisible). Works with shadows off,
+        /// and deepens on the Low tier (Palette.GetContact).
         /// </summary>
         public static void Contact(Transform p, Vector3 basePos, float radius)
         {
-            var go = Geo.Soft("Contact", p, Geo.DiscMesh, basePos + new Vector3(0f, 0.006f, 0f), Quaternion.identity,
-                              new Vector3(radius * 2f, 0.012f, radius * 2f), LevelColors.Contact);
+            Contact(p, basePos, radius * 2f, radius * 2f, 0f, LevelColors.Contact);
+        }
+
+        /// <summary>
+        /// Elliptical contact shade (<paramref name="sizeX"/> x <paramref name="sizeZ"/> metres, turned by
+        /// <paramref name="yRot"/>) on a floor of colour <paramref name="ground"/>, e.g. along a wall base
+        /// or under a bench on the paved path. <paramref name="p"/> must be the room root (Decor contract).
+        /// </summary>
+        public static void Contact(Transform p, Vector3 basePos, float sizeX, float sizeZ, float yRot, Color ground)
+        {
+            var go = Geo.Soft("Contact", p, Geo.DiscMesh, basePos + new Vector3(0f, 0.006f, 0f), Quaternion.Euler(0f, yRot, 0f),
+                              new Vector3(sizeX, 0.012f, sizeZ), ground);
+            go.GetComponent<MeshRenderer>().sharedMaterial = Palette.GetContact(ground);
             Tag(go, basePos.y, 0.01f, 1f, 0f);
+            NoShadow(go);
+        }
+
+        /// <summary>
+        /// Contact shade along a long prop (wall base): <paramref name="width"/> across, <paramref name="length"/>
+        /// along local z turned by <paramref name="yRot"/>; darkest on the centre line, soft ends.
+        /// </summary>
+        public static void ContactStrip(Transform p, Vector3 center, float width, float length, float yRot, Color ground)
+        {
+            var go = Geo.Soft("Contact", p, Geo.ContactStripMesh, center + new Vector3(0f, 0.006f, 0f), Quaternion.Euler(0f, yRot, 0f),
+                              new Vector3(width, 0.012f, length), ground);
+            go.GetComponent<MeshRenderer>().sharedMaterial = Palette.GetContact(ground);
+            Tag(go, center.y, 0.01f, 1f, 0f);
             NoShadow(go);
         }
 
@@ -222,6 +247,7 @@ namespace Ion.Levels
             int k = Mathf.Abs(Mathf.RoundToInt(center.x * 7f + center.y * 3f + center.z)) % s_CloudMeshes.Count;
             var go = Geo.Soft("Cloud", p, s_CloudMeshes[k], center, Quaternion.Euler(0f, (center.x * 37f) % 360f, 0f), Vector3.one * scale, LevelColors.Cloud);
             var r = go.GetComponent<MeshRenderer>();
+            r.sharedMaterial = Ion.Presentation.AmbienceClouds.SharedCloudMaterial;
             r.shadowCastingMode = UnityEngine.Rendering.ShadowCastingMode.Off;
         }
 
@@ -231,6 +257,7 @@ namespace Ion.Levels
             var post = Geo.Box(p, basePos + new Vector3(0f, height * 0.5f, 0f), new Vector3(0.25f, height, 0.25f), Palette.DarkWood);
             post.name = "Post";
             Tag(post, basePos.y, height, 0.72f, 0.04f);
+            Contact(p, basePos, 0.4f);
         }
 
         /// <summary>Marks <paramref name="go"/> for DecorCombiner. <paramref name="baseY"/> is local to its parent (the room root).</summary>

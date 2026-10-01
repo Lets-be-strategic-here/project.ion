@@ -75,6 +75,25 @@ namespace Ion.Presentation
             return mat;
         }
 
+        static readonly Dictionary<int, Material> s_ContactCache = new Dictionary<int, Material>();
+        static readonly int AoBoostId = Shader.PropertyToID("_AoBoost");
+
+        /// <summary>
+        /// Shared material for contact-shade discs on a ground of colour <paramref name="ground"/>: the same
+        /// look as <see cref="Get"/>, but its baked radial shade deepens on the Low tier (no realtime
+        /// shadows; see Ion/FlatToon _AoBoost and Ambience's tier globals).
+        /// </summary>
+        public static Material GetContact(Color ground)
+        {
+            int key = Key(ground);
+            if (s_ContactCache.TryGetValue(key, out var mat) && mat != null)
+                return mat;
+            mat = CreateMaterial(ground, "Ion_Contact_" + ColorUtility.ToHtmlStringRGB(ground));
+            if (mat.HasProperty(AoBoostId)) mat.SetFloat(AoBoostId, 1.5f);
+            s_ContactCache[key] = mat;
+            return mat;
+        }
+
         /// <summary>Hex helper, e.g. Hex("#BFE3F2"). Returns magenta on parse failure.</summary>
         public static Color Hex(string html)
         {

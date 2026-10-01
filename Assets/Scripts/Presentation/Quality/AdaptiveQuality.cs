@@ -16,7 +16,7 @@ namespace Ion.Presentation.Quality
     /// Fixed tier: applies that tier's table at its base scale and does not adapt.
     ///
     /// Tier tables (render scale / MSAA / shadow distance / sun shadows / shadow map / soft filter):
-    ///   High 1.0 / 4x / 40 m / Soft / asset value (2048) / Medium;  Med 0.85 / 2x / 30 m / Soft / 1024 / Low;
+    ///   High 1.0 / 4x / 36 m / Soft / 4096 (2048 on small-texture devices) / Medium;  Med 0.85 / 2x / 30 m / Soft / 1024 / Low;
     ///   Low 0.75 / 1x / 0 / None. Low relies on the baked contact shading (Kit.Contact, decor AO).
     ///
     /// Only public URP 17.3 setters are used: renderScale, msaaSampleCount, shadowDistance,
@@ -43,7 +43,9 @@ namespace Ion.Presentation.Quality
         {
             new TierSpec { Scale = 0.75f, Msaa = 1, ShadowDistance = 0f, Shadows = LightShadows.None, ShadowRes = 1024, Soft = SoftShadowQuality.Low },
             new TierSpec { Scale = 0.85f, Msaa = 2, ShadowDistance = 30f, Shadows = LightShadows.Soft, ShadowRes = 1024, Soft = SoftShadowQuality.Low },
-            new TierSpec { Scale = 1f, Msaa = 4, ShadowDistance = 40f, Shadows = LightShadows.Soft, ShadowRes = 0, Soft = SoftShadowQuality.Medium },
+            // High: a 4096 map over a slightly shorter distance (~2.5x the texel density), so the long
+            // ramp / wall shadow edges are smooth instead of stair-stepped.
+            new TierSpec { Scale = 1f, Msaa = 4, ShadowDistance = 36f, Shadows = LightShadows.Soft, ShadowRes = 4096, Soft = SoftShadowQuality.Medium },
         };
 
         public const float MinRenderScale = 0.6f;
@@ -367,12 +369,15 @@ namespace Ion.Presentation.Quality
             {
                 if (urp.msaaSampleCount != t.Msaa) urp.msaaSampleCount = t.Msaa;
                 if (!Mathf.Approximately(urp.shadowDistance, t.ShadowDistance)) urp.shadowDistance = t.ShadowDistance;
-                int res = t.ShadowRes <= 0 ? _origShadowRes : Mathf.Min(t.ShadowRes, _origShadowRes);
+                int res = t.ShadowRes <= 0 ? _origShadowRes : Mathf.Min(t.ShadowRes, Mathf.Max(_origShadowRes, MaxShadowRes()));
                 if (urp.mainLightShadowmapResolution != res) urp.mainLightShadowmapResolution = res;
             }
             SetScale(scale);
             EnsureSunShadows(tier);
         }
+
+        /// <summary>Largest shadow map the device takes (WebGL2 only guarantees 2048).</summary>
+        static int MaxShadowRes() => SystemInfo.maxTextureSize >= 8192 ? 4096 : 2048;
 
         void SetScale(float scale)
         {

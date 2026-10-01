@@ -52,7 +52,7 @@ namespace Ion.Gameplay
             var cam = camGo.AddComponent<Camera>();
             cam.fieldOfView = 70f;
             cam.nearClipPlane = 0.05f;
-            cam.farClipPlane = 600f;
+            cam.farClipPlane = 1200f; // the distant backdrop ring reaches ~1 km
             cam.clearFlags = CameraClearFlags.Skybox;
             cam.GetUniversalAdditionalCameraData(); // ensures URP camera data with defaults
 
