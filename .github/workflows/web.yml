@@ -1,0 +1,82 @@
+# Builds the Web (WebGL) player with GameCI and deploys it to GitHub Pages.
+# Manual trigger only until the Unity license secrets exist:
+#   UNITY_LICENSE (contents of the .ulf file, Personal) or UNITY_SERIAL (Pro),
+#   UNITY_EMAIL, UNITY_PASSWORD.
+# Repo settings -> Pages -> Source must be "GitHub Actions".
+name: Web build
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          lfs: true
+
+      - uses: actions/cache@v4
+        with:
+          path: Library
+          key: Library-WebGL-${{ hashFiles('Packages/packages-lock.json', 'Packages/manifest.json', 'ProjectSettings/ProjectVersion.txt') }}
+          restore-keys: |
+            Library-WebGL-
+
+      # Make sure URP / player settings / Main.unity exist even on a fresh checkout.
+      - name: Project setup
+        uses: game-ci/unity-builder@v6
+        env:
+          UNITY_LICENSE: ${{ secrets.UNITY_LICENSE }}
+          UNITY_EMAIL: ${{ secrets.UNITY_EMAIL }}
+          UNITY_PASSWORD: ${{ secrets.UNITY_PASSWORD }}
+          UNITY_SERIAL: ${{ secrets.UNITY_SERIAL }}
+        with:
+          unityVersion: 6000.3.25f1
+          targetPlatform: WebGL
+          buildMethod: Ion.EditorTools.ProjectSetup.Run
+          allowDirtyBuild: true
+
+      - name: Build Web player
+        uses: game-ci/unity-builder@v6
+        env:
+          UNITY_LICENSE: ${{ secrets.UNITY_LICENSE }}
+          UNITY_EMAIL: ${{ secrets.UNITY_EMAIL }}
+          UNITY_PASSWORD: ${{ secrets.UNITY_PASSWORD }}
+          UNITY_SERIAL: ${{ secrets.UNITY_SERIAL }}
+        with:
+          unityVersion: 6000.3.25f1
+          targetPlatform: WebGL
+          buildMethod: Ion.EditorTools.WebBuild.Build
+          customParameters: -ionOutput Build/Web
+          allowDirtyBuild: true
+
+      - name: Check output
+        run: |
+          ls -la Build/Web Build/Web/Build
+          test -f Build/Web/index.html
+          touch Build/Web/.nojekyll
+
+      - uses: actions/upload-pages-artifact@v5
+        with:
+          path: Build/Web
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v5

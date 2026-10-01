@@ -1,0 +1,163 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="theme-color" content="#BFE3F2">
+    <meta name="description" content="A small first-person photo-projection puzzle game, playable in the browser.">
+    <title>{{{ PRODUCT_NAME }}}</title>
+    <link rel="stylesheet" href="TemplateData/style.css">
+  </head>
+  <body>
+    <canvas id="unity-canvas" tabindex="-1" aria-label="Game"></canvas>
+
+    <div id="ion-loader" role="status" aria-live="polite">
+      <div class="ion-stack">
+        <figure class="ion-polaroid" aria-hidden="false">
+          <div class="ion-photo">
+            <span class="ion-corner tl"></span><span class="ion-corner tr"></span>
+            <span class="ion-corner bl"></span><span class="ion-corner br"></span>
+            <h1 class="ion-brand"><span class="pipe">|</span>project<span class="pipe">|</span>ion</h1>
+          </div>
+          <figcaption class="ion-strip">
+            <div class="ion-bar" role="progressbar" aria-label="Loading" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0">
+              <div class="ion-bar-fill" id="ion-bar-fill"></div>
+            </div>
+            <div class="ion-status" id="ion-status">Loading&hellip; 0%</div>
+          </figcaption>
+        </figure>
+
+        <section class="ion-controls" aria-label="Controls">
+          <h2>Controls</h2>
+          <dl>
+            <dt><kbd>W</kbd><kbd>A</kbd><kbd>S</kbd><kbd>D</kbd></dt><dd>move</dd>
+            <dt><kbd>Mouse</kbd></dt><dd>look</dd>
+            <dt><kbd>Space</kbd></dt><dd>jump</dd>
+            <dt><kbd>E</kbd></dt><dd>interact / pick up</dd>
+            <dt><kbd>1</kbd>&ndash;<kbd>5</kbd> / <kbd>Wheel</kbd></dt><dd>choose photo</dd>
+            <dt>hold <kbd>RMB</kbd></dt><dd>raise photo</dd>
+            <dt><kbd>LMB</kbd></dt><dd>place photo</dd>
+            <dt><kbd>Q</kbd> <kbd>E</kbd></dt><dd>rotate raised photo</dd>
+            <dt><kbd>R</kbd></dt><dd>rewind</dd>
+            <dt><kbd>C</kbd></dt><dd>instant camera</dd>
+            <dt><kbd>Esc</kbd></dt><dd>release cursor</dd>
+          </dl>
+        </section>
+
+        <nav class="ion-links">
+          <a href="#projects" id="ion-projects-link">View projects (no game)</a>
+        </nav>
+        <p class="ion-made">Built with Unity</p>
+      </div>
+    </div>
+
+    <div id="ion-mobile" class="ion-notice" hidden>
+      <span>|project|ion is made for a desktop browser with keyboard and mouse. It may not work well here.</span>
+      <button type="button" id="ion-mobile-close" aria-label="Dismiss">OK</button>
+    </div>
+
+    <div id="ion-banner" aria-live="assertive"></div>
+
+    <a id="ion-corner-link" href="#projects" hidden>View projects</a>
+
+    <script>
+      (function () {
+        var canvas = document.getElementById('unity-canvas');
+        var loader = document.getElementById('ion-loader');
+        var barFill = document.getElementById('ion-bar-fill');
+        var bar = barFill.parentNode;
+        var statusEl = document.getElementById('ion-status');
+        var banner = document.getElementById('ion-banner');
+        var cornerLink = document.getElementById('ion-corner-link');
+        var loaded = false;
+
+        // ---- desktop-only notice (informational, never blocks) -------------------------
+        var ua = navigator.userAgent || '';
+        var isMobile = /Android|iPhone|iPad|iPod|Mobile|Silk|Kindle|Opera Mini/i.test(ua) ||
+                       (navigator.maxTouchPoints > 1 && /Macintosh/.test(ua));
+        if (isMobile) {
+          var notice = document.getElementById('ion-mobile');
+          notice.hidden = false;
+          document.getElementById('ion-mobile-close').addEventListener('click', function () { notice.hidden = true; });
+        }
+
+        // ---- messages from the Unity loader ------------------------------------------
+        function showBanner(msg, type) {
+          var div = document.createElement('div');
+          div.className = 'ion-msg ' + (type === 'error' ? 'error' : 'warning');
+          div.textContent = msg;
+          banner.appendChild(div);
+          if (type !== 'error') setTimeout(function () { if (div.parentNode) div.parentNode.removeChild(div); }, 5000);
+        }
+
+        function setProgress(p) {
+          var pct = Math.round(Math.max(0, Math.min(1, p)) * 100);
+          barFill.style.transform = 'scaleX(' + (pct / 100) + ')';
+          bar.setAttribute('aria-valuenow', String(pct));
+          statusEl.textContent = p >= 0.9 ? 'Developing the photo…' : 'Loading… ' + pct + '%';
+        }
+
+        function updateCornerLink() {
+          cornerLink.hidden = !loaded || document.pointerLockElement === canvas;
+        }
+        document.addEventListener('pointerlockchange', updateCornerLink);
+
+        // The right mouse button raises a photo: never show the browser context menu over the game.
+        canvas.addEventListener('contextmenu', function (e) { e.preventDefault(); });
+        canvas.addEventListener('pointerdown', function () { canvas.focus(); });
+
+        // ---- Unity loader ------------------------------------------------------------
+        var buildUrl = 'Build';
+        var loaderUrl = buildUrl + '/{{{ LOADER_FILENAME }}}';
+        var config = {
+          arguments: [],
+          dataUrl: buildUrl + '/{{{ DATA_FILENAME }}}',
+          frameworkUrl: buildUrl + '/{{{ FRAMEWORK_FILENAME }}}',
+#if USE_THREADS
+          workerUrl: buildUrl + '/{{{ WORKER_FILENAME }}}',
+#endif
+#if USE_WASM
+          codeUrl: buildUrl + '/{{{ CODE_FILENAME }}}',
+#endif
+#if MEMORY_FILENAME
+          memoryUrl: buildUrl + '/{{{ MEMORY_FILENAME }}}',
+#endif
+#if SYMBOLS_FILENAME
+          symbolsUrl: buildUrl + '/{{{ SYMBOLS_FILENAME }}}',
+#endif
+          streamingAssetsUrl: 'StreamingAssets',
+          companyName: {{{ JSON.stringify(COMPANY_NAME) }}},
+          productName: {{{ JSON.stringify(PRODUCT_NAME) }}},
+          productVersion: {{{ JSON.stringify(PRODUCT_VERSION) }}},
+          showBanner: showBanner
+        };
+
+        // Cap the render resolution on high-DPI screens to keep 60 fps (override with ?dpr=2).
+        var dprParam = parseFloat(new URLSearchParams(window.location.search).get('dpr'));
+        config.devicePixelRatio = dprParam > 0 ? dprParam : Math.min(window.devicePixelRatio || 1, 1.5);
+
+        var script = document.createElement('script');
+        script.src = loaderUrl;
+        script.onload = function () {
+          createUnityInstance(canvas, config, setProgress).then(function (unityInstance) {
+            window.ionUnity = unityInstance;
+            loaded = true;
+            setProgress(1);
+            loader.classList.add('done');
+            setTimeout(function () { loader.hidden = true; }, 450);
+            updateCornerLink();
+            canvas.focus();
+          }).catch(function (message) {
+            statusEl.textContent = 'Could not start the game.';
+            showBanner(String(message), 'error');
+          });
+        };
+        script.onerror = function () {
+          statusEl.textContent = 'Could not load the game files.';
+          showBanner('Failed to load ' + loaderUrl, 'error');
+        };
+        document.body.appendChild(script);
+      })();
+    </script>
+  </body>
+</html>

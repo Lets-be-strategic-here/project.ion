@@ -1,0 +1,271 @@
+:root {
+  --sky: #BFE3F2;
+  --cream: #FFF4E0;
+  --ink: #2B2F36;
+  --ink-soft: rgba(43, 47, 54, 0.62);
+  --line: rgba(43, 47, 54, 0.14);
+  --font: ui-rounded, "SF Pro Rounded", "Nunito", system-ui, -apple-system, "Segoe UI", sans-serif;
+}
+
+* { box-sizing: border-box; }
+
+html, body {
+  margin: 0;
+  padding: 0;
+  width: 100%;
+  height: 100%;
+  overflow: hidden;
+  background: var(--sky);
+  color: var(--ink);
+  font-family: var(--font);
+  -webkit-font-smoothing: antialiased;
+}
+
+#unity-canvas {
+  position: fixed;
+  inset: 0;
+  width: 100vw;
+  height: 100vh;
+  display: block;
+  background: var(--sky);
+  outline: none;
+}
+
+/* ---------------------------------------------------------------- loader */
+
+#ion-loader {
+  position: fixed;
+  inset: 0;
+  z-index: 10;
+  display: flex;
+  align-items: safe center;
+  justify-content: center;
+  padding: 24px 16px;
+  overflow-y: auto;
+  background:
+    radial-gradient(120% 80% at 50% 0%, rgba(255, 255, 255, 0.55), rgba(255, 255, 255, 0) 60%),
+    var(--sky);
+  transition: opacity 400ms ease;
+}
+#ion-loader.done { opacity: 0; pointer-events: none; }
+#ion-loader[hidden] { display: none; }
+
+.ion-stack {
+  width: 100%;
+  max-width: 420px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 20px;
+}
+
+.ion-polaroid {
+  margin: 0;
+  width: 100%;
+  background: var(--cream);
+  padding: 14px 14px 0;
+  border-radius: 6px;
+  box-shadow: 0 1px 0 rgba(43, 47, 54, 0.08), 0 18px 40px -18px rgba(43, 47, 54, 0.45);
+  transform: rotate(-1.5deg);
+}
+
+.ion-photo {
+  position: relative;
+  aspect-ratio: 4 / 3;
+  border-radius: 2px;
+  background: linear-gradient(180deg, #a9d8ec 0%, var(--sky) 58%, #e9f4ea 58%, #d8ecd9 100%);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  overflow: hidden;
+}
+
+/* viewfinder corner marks */
+.ion-corner { position: absolute; width: 18px; height: 18px; border: 2px solid var(--ink); opacity: 0.55; }
+.ion-corner.tl { top: 12px; left: 12px; border-right: 0; border-bottom: 0; }
+.ion-corner.tr { top: 12px; right: 12px; border-left: 0; border-bottom: 0; }
+.ion-corner.bl { bottom: 12px; left: 12px; border-right: 0; border-top: 0; }
+.ion-corner.br { bottom: 12px; right: 12px; border-left: 0; border-top: 0; }
+
+.ion-brand {
+  margin: 0;
+  font-size: clamp(30px, 9vw, 44px);
+  font-weight: 800;
+  letter-spacing: -0.02em;
+  color: var(--ink);
+}
+.ion-brand .pipe { font-weight: 300; opacity: 0.45; padding: 0 0.04em; }
+
+.ion-strip {
+  padding: 16px 4px 18px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.ion-bar {
+  height: 8px;
+  border-radius: 999px;
+  background: rgba(43, 47, 54, 0.1);
+  overflow: hidden;
+}
+.ion-bar-fill {
+  height: 100%;
+  width: 100%;
+  background: var(--ink);
+  border-radius: inherit;
+  transform: scaleX(0);
+  transform-origin: left center;
+  transition: transform 200ms ease-out;
+}
+
+.ion-status {
+  font-size: 14px;
+  color: var(--ink-soft);
+  font-variant-numeric: tabular-nums;
+}
+
+/* ---------------------------------------------------------------- controls */
+
+.ion-controls {
+  width: 100%;
+  background: rgba(255, 244, 224, 0.7);
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  padding: 14px 16px 12px;
+}
+.ion-controls h2 {
+  margin: 0 0 8px;
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--ink-soft);
+}
+.ion-controls dl {
+  margin: 0;
+  display: grid;
+  grid-template-columns: auto 1fr;
+  column-gap: 14px;
+  row-gap: 6px;
+  font-size: 14px;
+  align-items: center;
+}
+.ion-controls dt { margin: 0; white-space: nowrap; color: var(--ink-soft); font-size: 13px; }
+.ion-controls dd { margin: 0; }
+
+kbd {
+  display: inline-block;
+  min-width: 1.7em;
+  padding: 1px 6px;
+  margin-right: 2px;
+  border-radius: 5px;
+  border: 1px solid var(--line);
+  border-bottom-width: 2px;
+  background: var(--cream);
+  color: var(--ink);
+  font: 600 12px/1.5 var(--font);
+  text-align: center;
+}
+
+/* ---------------------------------------------------------------- links */
+
+.ion-links a,
+#ion-corner-link {
+  color: var(--ink);
+  font-weight: 600;
+  font-size: 15px;
+  text-decoration: underline;
+  text-underline-offset: 3px;
+  text-decoration-thickness: 1px;
+}
+.ion-links a:hover, #ion-corner-link:hover { text-decoration-thickness: 2px; }
+.ion-links a:focus-visible, #ion-corner-link:focus-visible, .ion-notice button:focus-visible {
+  outline: 2px solid var(--ink);
+  outline-offset: 3px;
+  border-radius: 2px;
+}
+
+.ion-made {
+  margin: 0;
+  font-size: 12px;
+  color: var(--ink-soft);
+}
+
+#ion-corner-link {
+  position: fixed;
+  top: 14px;
+  right: 16px;
+  z-index: 5;
+  padding: 6px 12px;
+  border-radius: 999px;
+  background: rgba(255, 244, 224, 0.85);
+  font-size: 13px;
+  text-decoration: none;
+}
+#ion-corner-link[hidden] { display: none; }
+
+/* ---------------------------------------------------------------- notices */
+
+.ion-notice {
+  position: fixed;
+  left: 16px;
+  right: 16px;
+  bottom: 16px;
+  z-index: 20;
+  margin: 0 auto;
+  max-width: 520px;
+  display: flex;
+  gap: 12px;
+  align-items: center;
+  padding: 12px 14px;
+  border-radius: 10px;
+  background: var(--ink);
+  color: var(--cream);
+  font-size: 14px;
+  line-height: 1.4;
+}
+.ion-notice[hidden] { display: none; }
+.ion-notice button {
+  flex: none;
+  border: 0;
+  border-radius: 6px;
+  padding: 6px 12px;
+  background: var(--cream);
+  color: var(--ink);
+  font: 600 13px var(--font);
+  cursor: pointer;
+}
+
+#ion-banner {
+  position: fixed;
+  top: 16px;
+  left: 16px;
+  right: 16px;
+  z-index: 30;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
+  pointer-events: none;
+}
+.ion-msg {
+  max-width: 560px;
+  padding: 10px 14px;
+  border-radius: 8px;
+  font-size: 14px;
+  pointer-events: auto;
+  background: var(--cream);
+  color: var(--ink);
+  border: 1px solid var(--line);
+}
+.ion-msg.error { background: var(--ink); color: var(--cream); }
+
+@media (max-height: 640px) {
+  .ion-photo { aspect-ratio: 16 / 7; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  #ion-loader, .ion-bar-fill { transition: none; }
+  .ion-polaroid { transform: none; }
+}

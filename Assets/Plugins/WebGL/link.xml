@@ -1,0 +1,5 @@
+<!-- Managed stripping is set to High for the Web build. Keep our own (small) gameplay
+     assembly intact so nothing reached only through reflection or serialization is stripped. -->
+<linker>
+  <assembly fullname="Ion.Runtime" preserve="all" />
+</linker>
