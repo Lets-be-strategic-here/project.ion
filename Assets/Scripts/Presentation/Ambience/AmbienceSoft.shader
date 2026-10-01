@@ -1,4 +1,4 @@
-// |project|ion — Ion/AmbienceSoft
+// [project]ion — Ion/AmbienceSoft
 // Tiny unlit soft-dot shader for ambience billboards (dust motes, sun glow). No texture: the soft
 // disc is computed from UV. Vertex colour (particle colour) x _BaseColor. No fog, no lighting,
 // no keywords (1 variant), WebGL2-friendly. Blend mode is driven by _SrcBlend/_DstBlend so the same

@@ -1,4 +1,4 @@
-// |project|ion — Ion/FlatToon
+// [project]ion — Ion/FlatToon
 // Low-poly pastel toon shading for URP (Forward), WebGL2-compatible.
 //  * banded main-light N.L (3-step ramp) multiplied by realtime main-light shadows
 //  * shadowed/unlit side tinted towards a cool blue/purple

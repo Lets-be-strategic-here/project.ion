@@ -1,4 +1,4 @@
-// |project|ion — Ion/GradientSky
+// [project]ion — Ion/GradientSky
 // Three-colour vertical gradient skybox (top / horizon / bottom), golden horizon towards the sun, soft
 // halo and sun disc. Uses the Atmosphere globals (IonAtmosphere.hlsl) so fog fades into exactly this sky.
 Shader "Ion/GradientSky"

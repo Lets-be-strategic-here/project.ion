@@ -9,7 +9,7 @@ namespace Ion.Tests
     /// <summary>Debug-flag URL parsing and the element-wise cut of merged decor meshes.</summary>
     public class PolishTests
     {
-        [TestCase("https://vasiniks.github.io/-project-ion/?debug=1", true)]
+        [TestCase("https://vasiniks.github.io/project.ion/?debug=1", true)]
         [TestCase("http://127.0.0.1:8765/?dpr=2&debug=1", true)]
         [TestCase("http://127.0.0.1:8765/?debug=true#x", true)]
         [TestCase("http://127.0.0.1:8765/?debug=0", false)]

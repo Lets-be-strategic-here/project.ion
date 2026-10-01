@@ -150,7 +150,7 @@ namespace Ion.Presentation
             _card = card;
 
             // Wordmark: heavy rounded sans like the page's loader, thin pipes.
-            var title = UIUtil.NewText("Title", card, "<color=#FFF4E073>|</color>project<color=#FFF4E073>|</color>ion", 92, Palette.Cream, TextAnchor.MiddleCenter, FontStyle.Bold);
+            var title = UIUtil.NewText("Title", card, "<color=#FFF4E073>[</color>project<color=#FFF4E073>]</color>ion", 92, Palette.Cream, TextAnchor.MiddleCenter, FontStyle.Bold);
             UIUtil.Anchor(title.rectTransform, new Vector2(0.5f, 1f), new Vector2(0.5f, 1f), new Vector2(0f, 0f), new Vector2(CardW, 110f));
 
             var sub = UIUtil.NewText("Subtitle", card, "a little photo-projection puzzle", 26, Palette.Sky, TextAnchor.MiddleCenter, FontStyle.Normal);

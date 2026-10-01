@@ -1,4 +1,4 @@
-# |project|ion — Vertical Slice Design
+# [project]ion — Vertical Slice Design
 
 Date: 2026-09-30 · Status: approved for build (user: "playable/presentable thing first")
 
@@ -17,7 +17,7 @@ capture-and-paste, and reach the final teleporter. 60 fps on a mid laptop in Chr
 
 - Unity **6000.3.25f1** (6.3 LTS), **URP** with the **Forward** path (not Forward+), linear colour, Input System package.
 - Target: **Web** (WebGL2). Compression **Disabled** (GitHub Pages gzips on the fly), Strip Engine Code, Managed Stripping High, IL2CPP "Optimize for code size", Data Caching on, Debug Symbols off, Exceptions None, texture compression DXT, MSAA 4x.
-- Hosting: `https://vasiniks.github.io/-project-ion/`. Local build to `Build/Web`; CI via GameCI later (needs the user's license secret).
+- Hosting: `https://vasiniks.github.io/project.ion/`. Local build to `Build/Web`; CI via GameCI later (needs the user's license secret).
 - **Everything is built from code.** There are no hand-authored scenes or prefabs. An editor script (`-executeMethod`) creates the URP assets, Player settings and a single `Main.unity`, which contains one `GameBootstrap` object. At runtime `GameBootstrap` builds the rooms, the player, the UI and the photo dioramas. Agents can therefore author and verify everything in batch mode.
 - **Low poly:** levels are composed only of **convex closed primitives** (boxes, wedges, prisms) with flat palette colours (one shared material per colour). Since there are no textures, cut faces need no UVs.
 - Single-threaded throughout (WebGL). No Jobs/Burst threading.
@@ -154,7 +154,7 @@ Photo dioramas live far below the world at y = −1000, spaced 200 m apart. At s
 ## Web page
 
 `Assets/WebGLTemplates/Ion/index.html` contains:
-- the name |project|ion and a loading bar
+- the name [project]ion and a loading bar
 - a "View projects (no game)" link (placeholder anchor) and a controls cheat-sheet
 - a canvas that fills the window
 

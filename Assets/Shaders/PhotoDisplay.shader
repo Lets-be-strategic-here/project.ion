@@ -1,4 +1,4 @@
-// |project|ion — Ion/PhotoDisplay
+// [project]ion — Ion/PhotoDisplay
 // UGUI-compatible (RawImage / Image) unlit shader that gives photos a Polaroid look:
 // slight desaturation, warm tint, lifted blacks and a soft vignette.
 Shader "Ion/PhotoDisplay"

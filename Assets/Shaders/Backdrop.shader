@@ -1,4 +1,4 @@
-// |project|ion — Ion/Backdrop
+// [project]ion — Ion/Backdrop
 // The distant scenery ring (floating islands, mesas, mountains, a waterfall, a sea of clouds): one merged
 // mesh, vertex colours, flat faces. Cheap: no shadows (no ShadowCaster pass, no shadow sampling), a
 // wrapped two-tone sun term, a warm top highlight, and aerial perspective towards the same sky colour

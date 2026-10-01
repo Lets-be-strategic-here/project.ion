@@ -252,7 +252,7 @@ namespace Ion.Presentation
             const float colX = 46f + photoW + border * 2f + 40f;
             float colW = w - colX - 40f;
             float colCenter = colX + colW * 0.5f - w * 0.5f;
-            var title = UIUtil.NewText("Title", _card, "<color=#2B2F3666>|</color>project<color=#2B2F3666>|</color>ion", 72, Palette.Ink, TextAnchor.MiddleCenter, FontStyle.Bold, false);
+            var title = UIUtil.NewText("Title", _card, "<color=#2B2F3666>[</color>project<color=#2B2F3666>]</color>ion", 72, Palette.Ink, TextAnchor.MiddleCenter, FontStyle.Bold, false);
             UIUtil.Anchor(title.rectTransform, new Vector2(0.5f, 1f), new Vector2(0.5f, 1f), new Vector2(colCenter, -48f), new Vector2(colW, 96f));
 
             var thanks = UIUtil.NewText("Thanks", _card, "thanks for playing", 34, Palette.Ink, TextAnchor.MiddleCenter, FontStyle.Italic, false);

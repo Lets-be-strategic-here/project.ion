@@ -1,4 +1,4 @@
-# Building |project|ion
+# Building [project]ion
 
 Unity **6000.3.25f1** (6.3 LTS) with the **Web Build Support** module. Everything below runs
 from the repo root (which is also the Unity project root).
@@ -86,7 +86,7 @@ repo secrets are set:
 - `UNITY_EMAIL` and `UNITY_PASSWORD`
 
 Pages must use **GitHub Actions** as its source. The target URL is
-`https://vasiniks.github.io/-project-ion/`. All asset paths in the template are relative, so
+`https://vasiniks.github.io/project.ion/`. All asset paths in the template are relative, so
 the sub-path works.
 
 ## Troubleshooting

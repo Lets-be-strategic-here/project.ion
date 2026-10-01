@@ -1,4 +1,4 @@
-// |project|ion — shared sky / aerial-perspective helpers (Ion/FlatToon, Ion/Backdrop, Ion/GradientSky).
+// [project]ion — shared sky / aerial-perspective helpers (Ion/FlatToon, Ion/Backdrop, Ion/GradientSky).
 // All globals are set by Ion.Presentation.Atmosphere (linear colours). When they are unset (all zero:
 // edit-mode tests, a scene without the bootstrap) fog is off and the sky helpers return black.
 #ifndef ION_ATMOSPHERE_INCLUDED

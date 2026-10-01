@@ -336,7 +336,7 @@ namespace Ion.EditorTools
         static void SetupPlayerSettings()
         {
             PlayerSettings.companyName = "vasiniks";
-            PlayerSettings.productName = "|project|ion";
+            PlayerSettings.productName = "[project]ion";
             PlayerSettings.bundleVersion = "0.1.0";
             PlayerSettings.colorSpace = ColorSpace.Linear;
             PlayerSettings.stripEngineCode = true;

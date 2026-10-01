@@ -91,7 +91,7 @@ namespace Ion.Levels
             Kit.Rock(root, new Vector3(5.5f, 0f, 20f), 1f, 220f);
 
             // Title above the exit.
-            ctx.Label(new Vector3(0f, 4.5f, 21f), Quaternion.identity, "|project|ion", 110, Palette.Ink, 8f);
+            ctx.Label(new Vector3(0f, 4.5f, 21f), Quaternion.identity, "[project]ion", 110, Palette.Ink, 8f);
             ctx.Label(new Vector3(0f, 3.65f, 21f), Quaternion.identity, "step through to finish", 40, Palette.Slate, 8f);
 
             ctx.SetSpawn(new Vector3(0f, 0f, -6f));
@@ -109,7 +109,7 @@ namespace Ion.Levels
                 var player = Ion.Gameplay.FirstPersonController.Current;
                 if (player != null) player.Teleport(spawn.position, spawn.rotation.eulerAngles.y);
                 if (EndCard.Instance != null) EndCard.Instance.Open();
-                else RoomContext.Toast("Thanks for playing |project|ion", 7f);
+                else RoomContext.Toast("Thanks for playing [project]ion", 7f);
             });
         }
     }
