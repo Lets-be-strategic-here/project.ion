@@ -1,0 +1,319 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="theme-color" content="#EFEBE3">
+    <meta name="description" content="A small first-person photo-projection puzzle game, playable in the browser.">
+    <title>[project]ion</title>
+    <!-- Inline icon (a tiny print with crop marks): avoids the browser's /favicon.ico 404. -->
+    <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect x='5' y='3' width='22' height='26' rx='1.5' fill='%23F5F8F8'/%3E%3Crect x='8' y='6' width='16' height='14' fill='%238FB8E6'/%3E%3Crect x='8' y='15' width='16' height='5' fill='%23D7CDBB'/%3E%3Cpath d='M3 8V3h5M29 8V3h-5M3 24v5h5M29 24v5h-5' stroke='%23383D47' stroke-width='1.6' fill='none'/%3E%3C/svg%3E">
+    <link rel="stylesheet" href="TemplateData/style.css">
+  </head>
+  <body>
+    <canvas id="unity-canvas" tabindex="-1" aria-label="Game"></canvas>
+
+    <div id="ion-loader" role="status" aria-live="polite">
+      <div class="ion-stack">
+        <figure class="ion-polaroid" aria-hidden="false">
+          <div class="ion-photo">
+            <span class="ion-corner tl"></span><span class="ion-corner tr"></span>
+            <span class="ion-corner bl"></span><span class="ion-corner br"></span>
+            <h1 class="ion-brand"><span class="pipe">[</span>project<span class="pipe">]</span>ion</h1>
+          </div>
+          <figcaption class="ion-strip">
+            <div class="ion-bar" role="progressbar" aria-label="Loading" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0">
+              <div class="ion-bar-fill" id="ion-bar-fill"></div>
+            </div>
+            <div class="ion-status-row">
+              <span class="ion-status" id="ion-status">Loading&hellip;</span>
+              <span class="ion-pct" id="ion-pct">0%</span>
+            </div>
+            <button type="button" class="ion-play" id="ion-play"><span class="br">[</span> Click to play <span class="br">]</span></button>
+          </figcaption>
+        </figure>
+
+        <section class="ion-controls" aria-label="Controls">
+          <h2>Controls</h2>
+          <dl>
+            <dt><kbd>W</kbd><kbd>A</kbd><kbd>S</kbd><kbd>D</kbd></dt><dd>move</dd>
+            <dt><kbd>Mouse</kbd></dt><dd>look</dd>
+            <dt><kbd>Space</kbd></dt><dd>jump</dd>
+            <dt><kbd>1</kbd>&ndash;<kbd>9</kbd> / <kbd>Wheel</kbd></dt><dd>choose photo</dd>
+            <dt>hold <kbd>Shift</kbd></dt><dd>hold up the photo</dd>
+            <dt><kbd>LMB</kbd></dt><dd>place photo / take a photo</dd>
+            <dt><kbd>Q</kbd> <kbd>E</kbd></dt><dd>rotate the raised photo</dd>
+            <dt><kbd>E</kbd></dt><dd>press / pick up</dd>
+            <dt><kbd>R</kbd></dt><dd>rewind, anytime</dd>
+            <dt><kbd>R</kbd> <kbd>R</kbd></dt><dd>back to the checkpoint</dd>
+            <dt><kbd>C</kbd></dt><dd>instant camera</dd>
+            <dt><kbd>Esc</kbd></dt><dd>pause</dd>
+          </dl>
+          <p class="note">Holding the right mouse button also raises the photo. Settings (Esc) can make Shift a toggle.</p>
+        </section>
+
+        <nav class="ion-links">
+          <a href="https://github.com/Vasiniks" id="ion-projects-link" target="_blank" rel="noopener">View projects</a>
+        </nav>
+        <p class="ion-made">Built with Unity</p>
+      </div>
+    </div>
+
+    <div id="ion-mobile" class="ion-notice" hidden>
+      <span>[project]ion is made for a desktop browser with keyboard and mouse. It may not work well here.</span>
+      <button type="button" id="ion-mobile-close" aria-label="Dismiss">OK</button>
+    </div>
+
+    <div id="ion-banner" aria-live="assertive"></div>
+
+    <a id="ion-corner-link" href="https://github.com/Vasiniks" target="_blank" rel="noopener" hidden>View projects</a>
+
+    <script>
+      // ---------------------------------------------------------------- pointer lock (art bible §9.3)
+      // The page owns the lock. The game arms it (IonPointerLock.jslib) and polls the result; the lock is
+      // requested synchronously inside the browser's own mousedown (a user gesture), never on Unity's next
+      // frame. unadjustedMovement where supported, plain lock otherwise. After Esc, Chrome refuses a re-lock
+      // for about a second: clicks inside that window are not sent (the game shows "Click to resume" with a
+      // cooldown bar), and a refused request just waits for the next click (no request loops).
+      (function () {
+        var canvas = document.getElementById('unity-canvas');
+        var COOLDOWN_MS = 1000;
+        var S = {
+          armed: false, ready: false, locked: false, errored: false,
+          serials: [0, 0, 0, 0],   // locks acquired, locks lost, focus lost, errors
+          unlockedAt: -1,
+          rects: []                // {kind: 0 block | 1 allow, x0, y0, x1, y1} in Unity screen pixels
+        };
+
+        function now() { return performance.now(); }
+        function isLocked() { return document.pointerLockElement === canvas; }
+        function cooling() { return !S.errored && S.unlockedAt >= 0 && now() - S.unlockedAt < COOLDOWN_MS; }
+
+        // Unity screen pixels: canvas backing store, origin bottom-left.
+        function toUnity(e) {
+          var r = canvas.getBoundingClientRect();
+          var sx = canvas.width / Math.max(1, r.width), sy = canvas.height / Math.max(1, r.height);
+          return { x: (e.clientX - r.left) * sx, y: canvas.height - (e.clientY - r.top) * sy };
+        }
+
+        function clickAllowed(e) {
+          if (e.target !== canvas) return true; // the loader's own button
+          var p = toUnity(e), anyAllow = false, inAllow = false;
+          for (var i = 0; i < S.rects.length; i++) {
+            var q = S.rects[i];
+            if (!q) continue;
+            var inside = p.x >= q.x0 && p.x <= q.x1 && p.y >= q.y0 && p.y <= q.y1;
+            if (q.kind === 0 && inside) return false;
+            if (q.kind === 1) { anyAllow = true; if (inside) inAllow = true; }
+          }
+          return !anyAllow || inAllow;
+        }
+
+        function fail() { S.serials[3]++; S.errored = true; }
+
+        function request() {
+          if (isLocked()) return;
+          canvas.focus();
+          var p = null;
+          try { p = canvas.requestPointerLock({ unadjustedMovement: true }); }
+          catch (err) { try { p = canvas.requestPointerLock(); } catch (err2) { fail(); return; } }
+          if (p && typeof p.then === 'function') {
+            p.catch(function (err) {
+              if (err && err.name === 'NotSupportedError') {
+                // No raw input on this platform: plain lock (still inside the click's activation window).
+                try {
+                  var p2 = canvas.requestPointerLock();
+                  if (p2 && typeof p2.then === 'function') p2.catch(fail);
+                } catch (err3) { fail(); }
+              } else {
+                fail();
+              }
+            });
+          }
+        }
+
+        function tryLockFromClick(e) {
+          if (e.button !== 0 || !S.armed || !S.ready || isLocked() || cooling() || !clickAllowed(e)) return false;
+          request();
+          return true;
+        }
+
+        canvas.addEventListener('mousedown', function (e) {
+          canvas.focus();
+          tryLockFromClick(e);
+        }, true);
+
+        document.addEventListener('pointerlockchange', function () {
+          var l = isLocked();
+          if (l === S.locked) return;
+          S.locked = l;
+          if (l) { S.serials[0]++; S.errored = false; canvas.focus(); }
+          else { S.serials[1]++; S.unlockedAt = now(); }
+          if (window.__ionUpdateCornerLink) window.__ionUpdateCornerLink();
+        });
+        document.addEventListener('pointerlockerror', fail);
+
+        // Focus loss: release cleanly; the game forgets every held key (Shift held across an alt-tab).
+        function focusLost() {
+          S.serials[2]++;
+          if (isLocked() && document.exitPointerLock) document.exitPointerLock();
+        }
+        window.addEventListener('blur', focusLost);
+        document.addEventListener('visibilitychange', function () { if (document.hidden) focusLost(); });
+
+        // Keys that would scroll the page or move focus away from the game.
+        var STOP = { ' ': 1, 'Tab': 1, 'Shift': 1, 'ArrowUp': 1, 'ArrowDown': 1, 'ArrowLeft': 1, 'ArrowRight': 1, 'PageUp': 1, 'PageDown': 1, 'Home': 1, 'End': 1 };
+        window.addEventListener('keydown', function (e) {
+          if ((isLocked() || document.activeElement === canvas) && STOP[e.key]) e.preventDefault();
+        }, true);
+        // The right mouse button raises a photo too: never show the browser context menu over the game.
+        canvas.addEventListener('contextmenu', function (e) { e.preventDefault(); });
+
+        window.ionPointerLock = {
+          setArmed: function (a) { S.armed = !!a; },
+          setReady: function () {
+            if (S.ready) return;
+            S.ready = true;
+            if (window.__ionOnReady) window.__ionOnReady();
+          },
+          isReady: function () { return S.ready; },
+          setRect: function (slot, kind, x0, y0, x1, y1) {
+            if (slot < 0) { S.rects = []; return; }
+            S.rects[slot] = x1 >= x0 && y1 >= y0 ? { kind: kind, x0: x0, y0: y0, x1: x1, y1: y1 } : null;
+          },
+          isLocked: isLocked,
+          serial: function (which) { return S.serials[which] | 0; },
+          msSinceUnlock: function () { return S.unlockedAt < 0 ? -1 : Math.round(now() - S.unlockedAt); },
+          release: function () { if (isLocked() && document.exitPointerLock) document.exitPointerLock(); },
+          // The loader's "Click to play" (a user gesture of its own).
+          requestFromGesture: function () { if (S.ready && !isLocked()) request(); }
+        };
+      })();
+    </script>
+
+    <script>
+      (function () {
+        var canvas = document.getElementById('unity-canvas');
+        var loader = document.getElementById('ion-loader');
+        var barFill = document.getElementById('ion-bar-fill');
+        var bar = barFill.parentNode;
+        var statusEl = document.getElementById('ion-status');
+        var pctEl = document.getElementById('ion-pct');
+        var playBtn = document.getElementById('ion-play');
+        var banner = document.getElementById('ion-banner');
+        var cornerLink = document.getElementById('ion-corner-link');
+        var loaded = false;
+        var loaderGone = false;
+
+        // ---- desktop-only notice (informational, never blocks) -------------------------
+        var ua = navigator.userAgent || '';
+        var isMobile = /Android|iPhone|iPad|iPod|Mobile|Silk|Kindle|Opera Mini/i.test(ua) ||
+                       (navigator.maxTouchPoints > 1 && /Macintosh/.test(ua));
+        if (isMobile) {
+          var notice = document.getElementById('ion-mobile');
+          notice.hidden = false;
+          document.getElementById('ion-mobile-close').addEventListener('click', function () { notice.hidden = true; });
+        }
+
+        // ---- messages from the Unity loader ------------------------------------------
+        function showBanner(msg, type) {
+          var div = document.createElement('div');
+          div.className = 'ion-msg ' + (type === 'error' ? 'error' : 'warning');
+          div.textContent = msg;
+          banner.appendChild(div);
+          if (type !== 'error') setTimeout(function () { if (div.parentNode) div.parentNode.removeChild(div); }, 5000);
+        }
+
+        // The loader's photo "develops" as the download progresses (CSS reads --p, 0..1).
+        function setProgress(p) {
+          p = Math.max(0, Math.min(1, p));
+          var pct = Math.round(p * 100);
+          barFill.style.transform = 'scaleX(' + p + ')';
+          bar.setAttribute('aria-valuenow', String(pct));
+          loader.style.setProperty('--p', p.toFixed(3));
+          pctEl.textContent = pct + '%';
+          statusEl.textContent = p >= 1 ? 'Starting…' : p >= 0.9 ? 'Developing the photo…' : 'Loading…';
+        }
+
+        function updateCornerLink() {
+          cornerLink.hidden = !loaded || !loaderGone || document.pointerLockElement === canvas || !!window.__ionEndCard;
+        }
+        window.__ionUpdateCornerLink = updateCornerLink;
+
+        // ---- loader -> game in one click ------------------------------------------------
+        // The loading card turns into the title once the game has drawn a frame (the game calls
+        // IonPL_SetReady). A click anywhere on it locks the pointer inside that same click and fades the
+        // card; the game is then already running and locked.
+        function hideLoader() {
+          if (loaderGone) return;
+          loaderGone = true;
+          loader.classList.add('done');
+          setTimeout(function () { loader.hidden = true; updateCornerLink(); }, 420);
+          canvas.focus();
+        }
+
+        window.__ionOnReady = function () {
+          if (loaderGone) return;
+          loader.classList.add('ready');
+          statusEl.textContent = 'Ready';
+          loader.setAttribute('aria-live', 'off');
+          try { playBtn.focus({ preventScroll: true }); } catch (e) { }
+        };
+
+        function startFromLoader(e) {
+          if (loaderGone || !window.ionPointerLock.isReady()) return; // loading: the card swallows clicks
+          // Links on the card keep working.
+          if (e && e.target && e.target.closest && e.target.closest('a')) return;
+          if (e) e.preventDefault();
+          window.ionPointerLock.requestFromGesture();
+          hideLoader();
+        }
+        loader.addEventListener('mousedown', function (e) { if (e.button === 0) startFromLoader(e); });
+        playBtn.addEventListener('keydown', function (e) {
+          if (e.key === 'Enter' || e.key === ' ') startFromLoader(e);
+        });
+
+        // ---- Unity loader ------------------------------------------------------------
+        var buildUrl = 'Build';
+        var loaderUrl = buildUrl + '/Web.loader.js';
+        var config = {
+          arguments: [],
+          dataUrl: buildUrl + '/Web.data',
+          frameworkUrl: buildUrl + '/Web.framework.js',
+          codeUrl: buildUrl + '/Web.wasm',
+          streamingAssetsUrl: 'StreamingAssets',
+          companyName: "vasiniks",
+          productName: "[project]ion",
+          productVersion: "0.1.0",
+          showBanner: showBanner
+        };
+
+        // Cap the render resolution on high-DPI screens to keep 60 fps (override with ?dpr=2).
+        var dprParam = parseFloat(new URLSearchParams(window.location.search).get('dpr'));
+        config.devicePixelRatio = dprParam > 0 ? dprParam : Math.min(window.devicePixelRatio || 1, 1.5);
+
+        var script = document.createElement('script');
+        script.src = loaderUrl;
+        script.onload = function () {
+          createUnityInstance(canvas, config, setProgress).then(function (unityInstance) {
+            window.ionUnity = unityInstance;
+            loaded = true;
+            setProgress(1);
+            updateCornerLink();
+            // Safety net: a build without the pointer-lock plugin never reports ready; do not trap the
+            // player on the card (the game's own title overlay then handles the click).
+            setTimeout(function () { if (!window.ionPointerLock.isReady()) hideLoader(); }, 8000);
+          }).catch(function (message) {
+            statusEl.textContent = 'Could not start the game.';
+            showBanner(String(message), 'error');
+          });
+        };
+        script.onerror = function () {
+          statusEl.textContent = 'Could not load the game files.';
+          showBanner('Failed to load ' + loaderUrl, 'error');
+        };
+        document.body.appendChild(script);
+      })();
+    </script>
+  </body>
+</html>

@@ -1,0 +1,361 @@
+/* [project]ion page: the "Light Table" palette of the art bible (§1, §3.1).
+   Paper ground with a faint contact-sheet grid, Graphite ink (never black), Ion for the one thing to
+   use, Brass for marks. */
+:root {
+  --paper: #EFEBE3;
+  --plaster: #E4DDD0;
+  --limestone: #D7CDBB;
+  --frost: #F5F8F8;
+  --graphite: #383D47;
+  --graphite-soft: rgba(56, 61, 71, 0.64);
+  --line: rgba(56, 61, 71, 0.14);
+  --ion: #9FE3FF;
+  --brass: #C59A45;
+  --cyanotype: #2F5B88;
+  --font: "Nunito", ui-rounded, "SF Pro Rounded", system-ui, -apple-system, "Segoe UI", sans-serif;
+}
+
+* { box-sizing: border-box; }
+
+html, body {
+  margin: 0;
+  padding: 0;
+  width: 100%;
+  height: 100%;
+  overflow: hidden;
+  background: var(--paper);
+  color: var(--graphite);
+  font-family: var(--font);
+  -webkit-font-smoothing: antialiased;
+}
+
+#unity-canvas {
+  position: fixed;
+  inset: 0;
+  width: 100vw;
+  height: 100vh;
+  display: block;
+  background: var(--paper);
+  outline: none;
+  /* Never let the page scroll or select under the game. */
+  touch-action: none;
+  user-select: none;
+  -webkit-user-select: none;
+}
+
+/* ---------------------------------------------------------------- loader / title */
+
+#ion-loader {
+  position: fixed;
+  inset: 0;
+  z-index: 10;
+  display: flex;
+  align-items: safe center;
+  justify-content: center;
+  padding: 24px 16px;
+  overflow-y: auto;
+  /* The light table: Paper with a quiet 48 px contact-sheet grid. */
+  background:
+    linear-gradient(var(--line) 1px, transparent 1px) 0 0 / 48px 48px,
+    linear-gradient(90deg, var(--line) 1px, transparent 1px) 0 0 / 48px 48px,
+    radial-gradient(120% 80% at 50% 0%, rgba(255, 255, 255, 0.7), rgba(255, 255, 255, 0) 60%),
+    var(--paper);
+  transition: opacity 400ms cubic-bezier(0.33, 1, 0.68, 1);
+  cursor: default;
+}
+#ion-loader.ready { cursor: pointer; }
+#ion-loader.done { opacity: 0; pointer-events: none; }
+#ion-loader[hidden] { display: none; }
+
+.ion-stack {
+  width: 100%;
+  max-width: 440px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 20px;
+}
+
+.ion-polaroid {
+  margin: 0;
+  width: 100%;
+  background: var(--frost);
+  padding: 14px 14px 0;
+  border-radius: 4px;
+  box-shadow: 0 1px 0 rgba(56, 61, 71, 0.08), 0 18px 40px -18px rgba(47, 91, 136, 0.45);
+  transform: rotate(-1.5deg);
+}
+
+.ion-photo {
+  position: relative;
+  aspect-ratio: 4 / 3;
+  border-radius: 2px;
+  background: linear-gradient(180deg, #8FB8E6 0%, #F3E1D6 58%, var(--limestone) 58%, #CBBFA9 100%);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  overflow: hidden;
+  /* An instant photo developing: starts dim and colourless, gains colour with the download (--p). */
+  filter: saturate(calc(0.15 + 0.85 * var(--p, 0))) brightness(calc(0.82 + 0.18 * var(--p, 0))) sepia(calc(0.35 * (1 - var(--p, 0))));
+  transition: filter 400ms ease-out;
+}
+/* Milky "undeveloped" veil that clears as loading progresses. */
+.ion-photo::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background: radial-gradient(120% 90% at 50% 40%, rgba(245, 248, 248, 0.0), rgba(245, 248, 248, 0.6));
+  opacity: calc(1 - var(--p, 0));
+  transition: opacity 400ms ease-out;
+  pointer-events: none;
+}
+
+/* Crop marks. */
+.ion-corner { position: absolute; width: 18px; height: 18px; border: 2px solid var(--graphite); opacity: 0.55; }
+.ion-corner.tl { top: 12px; left: 12px; border-right: 0; border-bottom: 0; }
+.ion-corner.tr { top: 12px; right: 12px; border-left: 0; border-bottom: 0; }
+.ion-corner.bl { bottom: 12px; left: 12px; border-right: 0; border-top: 0; }
+.ion-corner.br { bottom: 12px; right: 12px; border-left: 0; border-top: 0; }
+
+.ion-brand {
+  margin: 0;
+  font-size: clamp(30px, 9vw, 46px);
+  font-weight: 800;
+  letter-spacing: -0.02em;
+  color: var(--graphite);
+}
+.ion-brand .pipe { font-weight: 300; color: var(--cyanotype); opacity: 0.75; padding: 0 0.04em; }
+
+.ion-strip {
+  padding: 16px 4px 18px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  min-height: 92px;
+}
+
+.ion-bar {
+  position: relative;
+  height: 6px;
+  border-radius: 999px;
+  background: rgba(56, 61, 71, 0.1);
+  overflow: hidden;
+}
+.ion-bar-fill {
+  height: 100%;
+  width: 100%;
+  background: var(--graphite);
+  border-radius: inherit;
+  transform: scaleX(0);
+  transform-origin: left center;
+  transition: transform 250ms ease-out;
+}
+/* A soft light sweep along the bar while loading. */
+.ion-bar::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(90deg, transparent, rgba(255, 255, 255, 0.5), transparent);
+  width: 35%;
+  animation: ion-sweep 1.6s ease-in-out infinite;
+  pointer-events: none;
+}
+@keyframes ion-sweep {
+  from { transform: translateX(-100%); }
+  to { transform: translateX(300%); }
+}
+
+.ion-status-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  gap: 12px;
+}
+.ion-status {
+  font-size: 14px;
+  color: var(--graphite-soft);
+}
+.ion-pct {
+  font-size: 14px;
+  font-weight: 700;
+  color: var(--graphite);
+  font-variant-numeric: tabular-nums;
+}
+
+/* "Click to play": appears in place of the bar once the game has drawn its first frame. One click goes
+   straight from here into the game (the pointer locks inside this click). */
+.ion-play {
+  display: none;
+  align-self: center;
+  margin: 2px 0 0;
+  border: 0;
+  border-radius: 10px;
+  padding: 14px 30px 15px;
+  background: var(--graphite);
+  color: var(--paper);
+  font: 800 20px/1 var(--font);
+  letter-spacing: 0.01em;
+  cursor: pointer;
+  box-shadow: 0 10px 22px -12px rgba(47, 91, 136, 0.7);
+  transition: transform 120ms cubic-bezier(0.5, 1, 0.89, 1), background-color 120ms ease-out;
+}
+.ion-play .br { color: var(--ion); font-weight: 400; }
+.ion-play:hover { background: #2E323B; }
+.ion-play:active { transform: scale(0.97); transition-duration: 80ms; }
+.ion-play:focus-visible { outline: 2px solid var(--cyanotype); outline-offset: 3px; }
+#ion-loader.ready .ion-play { display: inline-block; animation: ion-in 220ms cubic-bezier(0.33, 1, 0.68, 1) both; }
+#ion-loader.ready .ion-bar,
+#ion-loader.ready .ion-status-row { display: none; }
+@keyframes ion-in {
+  from { opacity: 0; transform: translateY(8px); }
+  to { opacity: 1; transform: none; }
+}
+
+/* ---------------------------------------------------------------- controls */
+
+.ion-controls {
+  width: 100%;
+  background: rgba(245, 248, 248, 0.75);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 14px 16px 12px;
+}
+.ion-controls h2 {
+  margin: 0 0 8px;
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--graphite-soft);
+}
+.ion-controls dl {
+  margin: 0;
+  display: grid;
+  grid-template-columns: auto 1fr;
+  column-gap: 14px;
+  row-gap: 6px;
+  font-size: 14px;
+  align-items: center;
+}
+.ion-controls dt { margin: 0; white-space: nowrap; color: var(--graphite-soft); font-size: 13px; }
+.ion-controls dd { margin: 0; }
+.ion-controls .note { margin: 8px 0 0; font-size: 12px; color: var(--graphite-soft); }
+
+/* Key caps in the bracket style: [SHIFT]. */
+kbd {
+  display: inline-block;
+  min-width: 1.7em;
+  padding: 1px 6px;
+  margin-right: 2px;
+  border-radius: 4px;
+  border: 1px solid var(--line);
+  border-bottom-width: 2px;
+  background: var(--frost);
+  color: var(--graphite);
+  font: 700 12px/1.5 var(--font);
+  text-align: center;
+}
+
+/* ---------------------------------------------------------------- links */
+
+.ion-links a,
+#ion-corner-link {
+  color: var(--graphite);
+  font-weight: 600;
+  font-size: 15px;
+  text-decoration: underline;
+  text-underline-offset: 3px;
+  text-decoration-thickness: 1px;
+}
+.ion-links a:hover, #ion-corner-link:hover { text-decoration-thickness: 2px; }
+.ion-links a:focus-visible, #ion-corner-link:focus-visible, .ion-notice button:focus-visible {
+  outline: 2px solid var(--cyanotype);
+  outline-offset: 3px;
+  border-radius: 2px;
+}
+
+.ion-made {
+  margin: 0;
+  font-size: 12px;
+  color: var(--graphite-soft);
+}
+
+#ion-corner-link {
+  position: fixed;
+  top: 14px;
+  right: 16px;
+  z-index: 5;
+  padding: 6px 12px;
+  border-radius: 999px;
+  background: rgba(239, 235, 227, 0.88);
+  font-size: 13px;
+  text-decoration: none;
+}
+#ion-corner-link[hidden] { display: none; }
+
+/* ---------------------------------------------------------------- notices */
+
+.ion-notice {
+  position: fixed;
+  left: 16px;
+  right: 16px;
+  bottom: 16px;
+  z-index: 20;
+  margin: 0 auto;
+  max-width: 520px;
+  display: flex;
+  gap: 12px;
+  align-items: center;
+  padding: 12px 14px;
+  border-radius: 8px;
+  background: var(--graphite);
+  color: var(--paper);
+  font-size: 14px;
+  line-height: 1.4;
+}
+.ion-notice[hidden] { display: none; }
+.ion-notice button {
+  flex: none;
+  border: 0;
+  border-radius: 6px;
+  padding: 6px 12px;
+  background: var(--paper);
+  color: var(--graphite);
+  font: 600 13px var(--font);
+  cursor: pointer;
+}
+
+#ion-banner {
+  position: fixed;
+  top: 16px;
+  left: 16px;
+  right: 16px;
+  z-index: 30;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
+  pointer-events: none;
+}
+.ion-msg {
+  max-width: 560px;
+  padding: 10px 14px;
+  border-radius: 8px;
+  font-size: 14px;
+  pointer-events: auto;
+  background: var(--paper);
+  color: var(--graphite);
+  border: 1px solid var(--line);
+}
+.ion-msg.error { background: var(--graphite); color: var(--paper); }
+
+@media (max-height: 640px) {
+  .ion-photo { aspect-ratio: 16 / 7; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  #ion-loader, .ion-bar-fill, .ion-photo, .ion-photo::after, .ion-play { transition: none; }
+  .ion-bar::after { animation: none; display: none; }
+  #ion-loader.ready .ion-play { animation: none; }
+  .ion-polaroid { transform: none; }
+}
