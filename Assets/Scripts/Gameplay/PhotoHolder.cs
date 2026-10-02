@@ -43,7 +43,7 @@ namespace Ion.Gameplay
         float _pressRoll;
         bool _pressStaged;       // the world swap is being staged behind the card (ProjectionSystem.BeginStagedPlace)
         int _pressDepthBefore;
-        PlayerPose _pressSafe;
+        PlayerPose _pressSafe, _pressPose;
 
         // Continuous rotation (degrees / second, signed) and the tap nudge.
         float _rollVel;
@@ -411,6 +411,7 @@ namespace Ion.Gameplay
                 _fpc.SnapPitchLevel(LevelSnapDegrees);
                 _fpc.ResetViewEffects();
                 _pressSafe = WorldHistory.SafePoseNow();
+                _pressPose = WorldHistory.PoseNow();
                 _pressDepthBefore = ps.PlacementCount;
                 _pressStaged = ps.BeginStagedPlace(_pressPhoto, cam, _pressRoll);
                 if (!_pressStaged)
@@ -450,7 +451,7 @@ namespace Ion.Gameplay
             SetRaised(false);
             IonInput.ConsumeRaise();
             ps.CommitStagedPlace();
-            AfterPlaced(photo, index, _pressDepthBefore, _pressSafe);
+            AfterPlaced(photo, index, _pressDepthBefore, _pressSafe, _pressPose);
             LastCommitMs = (float)commitWatch.Elapsed.TotalMilliseconds;
         }
 
@@ -481,6 +482,7 @@ namespace Ion.Gameplay
             _fpc.SnapPitchLevel(LevelSnapDegrees);
             _fpc.ResetViewEffects(); // the cut uses the exact eye pose, never a head-bob offset
             PlayerPose safe = WorldHistory.SafePoseNow();
+            PlayerPose pose = WorldHistory.PoseNow();
             int depthBefore = ps.PlacementCount;
 
             AutomationRaise = false;
@@ -494,12 +496,12 @@ namespace Ion.Gameplay
                 return false;
             }
 
-            AfterPlaced(photo, index, depthBefore, safe);
+            AfterPlaced(photo, index, depthBefore, safe, pose);
             return true;
         }
 
         /// <summary>Bookkeeping once a placement is in the world: consume the photo, record the change, notify.</summary>
-        void AfterPlaced(PhotoData photo, int index, int depthBefore, PlayerPose safe)
+        void AfterPlaced(PhotoData photo, int index, int depthBefore, PlayerPose safe, PlayerPose pose)
         {
             _inventory.Remove(photo);
             var history = WorldHistory.Instance;
@@ -512,7 +514,7 @@ namespace Ion.Gameplay
                     Index = index,
                     Inventory = _inventory,
                     SafePose = safe,
-                });
+                }.At(pose));
             }
             try { PlacedPhoto?.Invoke(photo); }
             catch (Exception e) { Debug.LogException(e); }

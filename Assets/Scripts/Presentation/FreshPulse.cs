@@ -12,11 +12,22 @@ namespace Ion.Presentation
     /// emission offset with a MaterialPropertyBlock. Renderers with a property block drop
     /// out of the SRP batcher, so the block is removed again as soon as the pulse ends (the batching cost
     /// lasts 0.6 s, after which the renderers are exactly as they were).
+    /// A rewind plays it backwards (<see cref="Undevelop"/>): the pieces wash back to the warm paper tone over
+    /// <see cref="Feel.RewindUndevelopSeconds"/> and hold there until the undo removes them.
     /// </summary>
     public sealed class FreshPulse : MonoBehaviour
     {
         public const float Seconds = Feel.DevelopSeconds;
         public float Intensity = 0.38f;
+
+        /// <summary>The scene's instance (on the ScreenFx object), or null.</summary>
+        public static FreshPulse Instance { get; private set; }
+
+        [RuntimeInitializeOnLoadMethod(RuntimeInitializeLoadType.SubsystemRegistration)]
+        static void ResetStatics() => Instance = null;
+
+        // Safety net: an un-develop whose pieces are never removed (the undo was cancelled) lets go after this.
+        const float UndevelopMaxHold = 2.5f;
 
         static readonly int EmissionId = Shader.PropertyToID("_EmissionColor");
         // A warm, desaturated print tone (Paper pushed toward Brass).
@@ -27,9 +38,38 @@ namespace Ion.Presentation
         MaterialPropertyBlock _block;
         ProjectionSystem _projection;
         float _t = -1f;
+        bool _reverse;
+        float _reverseSeconds = Feel.RewindUndevelopSeconds;
+
+        /// <summary>True while pieces are un-developing (debug / tests).</summary>
+        public bool Undeveloping => _reverse && _t >= 0f;
+
+        void Awake() => Instance = this;
+
+        /// <summary>
+        /// Rewind: <paramref name="renderers"/> (the pasted pieces about to be undone) un-develop to the warm,
+        /// washed-out print tone over <paramref name="seconds"/> (sine in-out), then hold until they are removed.
+        /// </summary>
+        public void Undevelop(IReadOnlyList<Renderer> renderers, float seconds)
+        {
+            Clear();
+            if (renderers == null) return;
+            for (int i = 0; i < renderers.Count; i++)
+            {
+                Renderer r = renderers[i];
+                if (r == null) continue;
+                Material m = r.sharedMaterial;
+                _renderers.Add(r);
+                _baseEmission.Add(m != null && m.HasProperty(EmissionId) ? m.GetColor(EmissionId) : Color.black);
+            }
+            _reverse = true;
+            _reverseSeconds = Mathf.Max(0.02f, seconds);
+            _t = _renderers.Count > 0 ? 0f : -1f;
+        }
 
         void OnDestroy()
         {
+            if (Instance == this) Instance = null;
             Clear();
             if (_projection != null)
             {
@@ -63,6 +103,7 @@ namespace Ion.Presentation
             _renderers.Clear();
             _baseEmission.Clear();
             _t = -1f;
+            _reverse = false;
         }
 
         void LateUpdate()
@@ -79,15 +120,30 @@ namespace Ion.Presentation
             }
             if (_t < 0f) return;
 
-            _t += Time.unscaledDeltaTime;
-            float k = 1f - _t / Seconds;
-            if (k <= 0f)
+            float glow;
+            if (_reverse)
             {
-                Clear();
-                return;
+                // Game time, in step with the rewind glide.
+                _t += Mathf.Min(Time.deltaTime, 0.05f);
+                if (_t >= _reverseSeconds + UndevelopMaxHold)
+                {
+                    Clear();
+                    return;
+                }
+                glow = Feel.RewindUndevelopGlow * Ease.InOutSine(_t / _reverseSeconds); // un-develops out
+            }
+            else
+            {
+                _t += Time.unscaledDeltaTime;
+                float k = 1f - _t / Seconds;
+                if (k <= 0f)
+                {
+                    Clear();
+                    return;
+                }
+                glow = Intensity * (1f - Ease.InOutSine(_t / Seconds)); // develops in
             }
             if (_block == null) _block = new MaterialPropertyBlock();
-            float glow = Intensity * (1f - Ease.InOutSine(_t / Seconds)); // develops in
             for (int i = 0; i < _renderers.Count; i++)
             {
                 Renderer r = _renderers[i];

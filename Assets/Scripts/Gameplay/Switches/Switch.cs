@@ -108,9 +108,10 @@ namespace Ion.Gameplay
             bool before = On;
             var history = WorldHistory.Instance;
             PlayerPose safe = WorldHistory.SafePoseNow();
+            PlayerPose pose = WorldHistory.PoseNow();
             SwitchBoard.Set(Channel, !before);
             if (history != null)
-                history.Push(new SwitchChange { Channel = Channel, Before = before, SafePose = safe });
+                history.Push(new SwitchChange { Channel = Channel, Before = before, SafePose = safe }.At(pose));
             _pressT = 0f;
             return true;
         }

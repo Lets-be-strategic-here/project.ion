@@ -35,7 +35,18 @@ namespace Ion.Gameplay.State
     /// <summary>One undoable world change. Pushed by the code that makes the change (art bible §11).</summary>
     public abstract class WorldChange
     {
-        /// <summary>Safe pose at the moment of the change (valid in the pre-change world).</summary>
+        /// <summary>
+        /// The player's exact pose (feet, yaw, pitch) at the moment of the change. A single R always returns the
+        /// player here (gliding back), even from solid ground elsewhere: what the change made possible is undone
+        /// together with where it got the player. Filled by <see cref="WorldHistory.Push"/> when not set.
+        /// </summary>
+        public PlayerPose Pose;
+        /// <summary>True when <see cref="Pose"/> was recorded.</summary>
+        public bool HasPose;
+        /// <summary>
+        /// Safe pose at the moment of the change (valid in the pre-change world): the fallback when the exact
+        /// <see cref="Pose"/> is not standable after the undo (a press made mid-jump, on a mover's deck).
+        /// </summary>
         public PlayerPose SafePose;
         /// <summary>Game time when the change was made.</summary>
         public float Time;
@@ -43,7 +54,15 @@ namespace Ion.Gameplay.State
         /// <summary>Restores the world as it was before the change. <paramref name="instant"/>: no animations (checkpoint restore).</summary>
         internal abstract void Undo(bool instant);
 
-        public override string ToString() => Kind + " @" + Time.ToString("0.00");
+        public override string ToString() => Kind + " @" + Time.ToString("0.00") + (HasPose ? " from " + Pose : string.Empty);
+
+        /// <summary>Sets <see cref="Pose"/> (fluent, for the code that pushes the change).</summary>
+        public WorldChange At(PlayerPose pose)
+        {
+            Pose = pose;
+            HasPose = true;
+            return this;
+        }
     }
 
     /// <summary>A photo placement. Undo: ProjectionSystem.Rewind() back to the depth before it; the photo returns to the hand.</summary>

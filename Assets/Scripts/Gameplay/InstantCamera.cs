@@ -186,7 +186,7 @@ namespace Ion.Gameplay
                     Inventory = _inventory,
                     Camera = this,
                     SafePose = WorldHistory.SafePoseNow(),
-                });
+                }.At(WorldHistory.PoseNow()));
             }
             GameplayUI.PhotoPrinted(photo);
             GameplayUI.Toast(_film > 0

@@ -101,6 +101,8 @@ namespace Ion.Presentation.Audio
             { Sfx.RewindNothing,    new SfxDef("rewind_nothing", 0.55f, 0.01f, priority: 24, minInterval: 0.12f) },
             { Sfx.RewindCheckpoint, new SfxDef("rewind_checkpoint", 0.9f, 0f, priority: 4, minInterval: 0.3f) },
             { Sfx.CheckpointSet,    new SfxDef("checkpoint_set", 0.6f, 0f, priority: 40, minInterval: 1f) },
+            { Sfx.RewindTapeLoop,   new SfxDef("rewind_tape_loop", 0.62f, 0f, priority: 8) },
+            { Sfx.RewindSettle,     new SfxDef("rewind_settle", 0.6f, 0.01f, priority: 16, minInterval: 0.2f) },
 
             // Body.
             { Sfx.Land,             new SfxDef("land", 0.6f, 0.06f, priority: 100, minInterval: 0.1f) },
@@ -213,6 +215,7 @@ namespace Ion.Presentation.Audio
                     data = AudioSynth.RewindReverse(seed); break;
                 case Sfx.PhotoPickup:
                 case Sfx.CheckpointSet:
+                case Sfx.RewindSettle:
                 case Sfx.ExhibitWake:
                 case Sfx.DeviceWake:
                     data = AudioSynth.PickupChime(); break;

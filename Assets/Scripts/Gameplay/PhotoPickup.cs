@@ -210,7 +210,7 @@ namespace Ion.Gameplay
 
         void OnTriggerEnter(Collider other)
         {
-            if (Collected || other == null) return;
+            if (Collected || other == null || _waitForExit) return;
             var fpc = other.GetComponentInParent<FirstPersonController>();
             if (fpc != null) Collect(fpc.GetComponent<PhotoInventory>());
         }
@@ -239,22 +239,33 @@ namespace Ion.Gameplay
                 _ring.localScale = new Vector3(s, 1f, s);
             }
 
-            // Fallback for touch collection (independent of physics trigger callbacks).
+            // Fallback for touch collection (independent of physics trigger callbacks). Never while a rewind
+            // glides the player past it.
             var player = FirstPersonController.Current;
-            if (player == null || !player.InputEnabled) return;
+            if (player == null || !player.InputEnabled || player.Frozen) return;
             Vector3 feet = player.transform.position;
             Vector3 p = FocusPoint;
             float y = Mathf.Clamp(p.y, feet.y + 0.35f, feet.y + 1.45f);
             Vector3 closest = new Vector3(feet.x, y, feet.z);
             float r = TouchRadius + 0.35f;
-            if ((p - closest).sqrMagnitude <= r * r)
-                Collect(player.GetComponent<PhotoInventory>());
+            bool touching = (p - closest).sqrMagnitude <= r * r;
+            if (_waitForExit)
+            {
+                if (!touching) _waitForExit = false;
+                return;
+            }
+            if (touching) Collect(player.GetComponent<PhotoInventory>());
         }
+
+        // Set by ResetPickup: a rewind returns the player to where they picked the photo up, so walking into it
+        // only collects it again after stepping away (E still collects it at once).
+        bool _waitForExit;
 
         /// <summary>Puts the photo back where it was (rewind, checkpoint restore, game restart).</summary>
         public void ResetPickup()
         {
             Collected = false;
+            _waitForExit = true;
             gameObject.SetActive(true);
         }
 
@@ -272,6 +283,7 @@ namespace Ion.Gameplay
             if (Photo != null && !inventory.Contains(Photo))
             {
                 PlayerPose safe = WorldHistory.SafePoseNow();
+                PlayerPose pose = WorldHistory.PoseNow();
                 inventory.Add(Photo);
                 var history = WorldHistory.Instance;
                 if (history != null)
@@ -283,7 +295,7 @@ namespace Ion.Gameplay
                         Index = inventory.IndexOf(Photo),
                         Inventory = inventory,
                         SafePose = safe,
-                    });
+                    }.At(pose));
                 }
                 GameplayUI.PhotoCollected(Photo, FocusPoint);
                 string label = string.IsNullOrEmpty(Photo.Label) ? "Photo" : Photo.Label;

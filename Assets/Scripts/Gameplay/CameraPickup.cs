@@ -21,6 +21,8 @@ namespace Ion.Gameplay
 
         public bool Taken { get; private set; }
 
+        bool _waitForExit;
+
         void Awake()
         {
             if (!TryGetComponent<Interactable>(out _)) gameObject.AddComponent<Interactable>();
@@ -31,6 +33,7 @@ namespace Ion.Gameplay
         public void ResetPickup()
         {
             Taken = false;
+            _waitForExit = true; // the rewind put the player back where they took it: step away first
             enabled = true;
             if (Visual != null) Visual.SetActive(true);
         }
@@ -39,9 +42,15 @@ namespace Ion.Gameplay
         {
             if (Taken) return;
             var player = FirstPersonController.Current;
-            if (player == null || !player.InputEnabled) return;
+            if (player == null || !player.InputEnabled || player.Frozen) return;
             Vector3 d = player.transform.position - transform.position;
-            if (d.y < -1f || d.y > 2.5f || d.x * d.x + d.z * d.z > Radius * Radius) return;
+            bool inside = !(d.y < -1f || d.y > 2.5f || d.x * d.x + d.z * d.z > Radius * Radius);
+            if (_waitForExit)
+            {
+                if (!inside) _waitForExit = false;
+                return;
+            }
+            if (!inside) return;
             Take(player);
         }
 
@@ -60,6 +69,7 @@ namespace Ion.Gameplay
                 Camera = camera,
                 SafePose = WorldHistory.SafePoseNow(),
             };
+            change.At(WorldHistory.PoseNow());
             Taken = true;
             camera.SetUnlockedSilently(true);
             camera.Film = Film;

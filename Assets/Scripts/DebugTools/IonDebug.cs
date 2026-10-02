@@ -28,8 +28,12 @@ namespace Ion.DebugTools
     ///   Rotate("+1|-1")     ±90° roll steps, instant (+1 = Q, -1 = E).
     ///   RotateHold("+1|-1|0") hold Q (+1) / E (-1) through the player's eased rotation; 0 releases.
     ///   Place("")           places the held photo (raises it first if needed).
-    ///   Rewind("")          single R through WorldHistory (lowers a raised photo first).    alias: rewind
-    ///   Rewind2("")         R R: back to the last checkpoint.                                alias: rewind2
+    ///   Rewind("")          single R through WorldHistory, instantly (lowers a raised photo first). alias: rewind
+    ///   Rewind2("")         R R: back to the last checkpoint, instantly.                     alias: rewind2
+    ///   RewindPress("")     one real press of R (RewindController.PressRewind): the glide back with its
+    ///                       effects, the fall-recovery fade, or the "nothing" feedback; two presses within
+    ///                       0.35 s escalate to the checkpoint (as Rewind2Press("") does).   alias: rewindpress
+    ///   TimeScale("s")      Time.timeScale (0.05..4; "" = 1): slow a transition down for screenshots.
     ///   Press("")           presses the powered switch in reach (nearest, in view) like E.    alias: press
     ///   Checkpoint("id")    sets a checkpoint at the current pose (id default "debug").     alias: checkpoint
     ///   Snap("")            instant-camera photo from the current view (camera must be unlocked).
@@ -369,6 +373,40 @@ namespace Ion.DebugTools
             return r;
         }
 
+        /// <summary>
+        /// One real press of R through <see cref="RewindController.PressRewind"/>: the full visual path (the glide
+        /// back with its desaturation, tape bands, vignette, tape sound and returning photo; the fall-recovery
+        /// fade; the "nothing" feedback). A second press within 0.35 s escalates to the checkpoint.
+        /// </summary>
+        public void RewindPress(string arg)
+        {
+            var rc = PlayerComponent<RewindController>();
+            if (rc == null) { Warn("RewindPress: no RewindController"); return; }
+            rc.PressRewind();
+            Log("RewindPress -> " + (rc.IsGliding ? "glide " + rc.GlideSeconds.ToString("0.00", Inv) + " s to " + rc.GlideTarget
+                                                  : rc.Busy ? "transition" : rc.LastResult.ToString()));
+        }
+
+        public void rewindpress(string arg) => RewindPress(arg);
+
+        /// <summary>R R through the real path: the checkpoint iris and restore.</summary>
+        public void Rewind2Press(string arg)
+        {
+            var rc = PlayerComponent<RewindController>();
+            if (rc == null) { Warn("Rewind2Press: no RewindController"); return; }
+            rc.RewindToCheckpointNow();
+            Log("Rewind2Press -> checkpoint transition");
+        }
+
+        /// <summary>Time.timeScale for screenshots of transitions ("" = 1, clamped to 0.05..4).</summary>
+        public void TimeScale(string arg)
+        {
+            float s = 1f;
+            if (!string.IsNullOrWhiteSpace(arg) && !float.TryParse(arg.Trim(), System.Globalization.NumberStyles.Float, Inv, out s)) s = 1f;
+            Time.timeScale = Mathf.Clamp(s, 0.05f, 4f);
+            Log("TimeScale " + Time.timeScale.ToString("0.00", Inv));
+        }
+
         /// <summary>R R: back to the last checkpoint (world, inventory, switches, pose).</summary>
         public void Rewind2(string arg) => TryRewindToCheckpoint();
 
@@ -576,6 +614,7 @@ namespace Ion.DebugTools
                 sb.Append(",\"yaw\":").Append(F(player.Yaw)).Append(",\"pitch\":").Append(F(player.Pitch));
                 sb.Append(",\"grounded\":").Append(player.IsGrounded ? "true" : "false");
                 sb.Append(",\"respawns\":").Append(player.RespawnCount);
+                sb.Append(",\"gliding\":").Append(player.IsGliding ? "true" : "false");
             }
             if (inv != null)
             {

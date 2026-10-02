@@ -113,6 +113,12 @@ namespace Ion.Gameplay
             if (player == null) _physicsOverlap = false;
 
             bool inside = boundsInside || _physicsOverlap;
+            if (player != null && player.IsGliding)
+            {
+                // A rewind glide passes through: never a trip. Ending inside does not fire either (step out first).
+                _inside = _inside || inside;
+                return;
+            }
             if (inside && !_inside)
             {
                 _inside = true;

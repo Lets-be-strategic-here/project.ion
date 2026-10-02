@@ -312,9 +312,9 @@ namespace Ion.Tests.PlayMode
         }
 
         /// <summary>
-        /// Rewinding while standing on what the placement created (the pasted stair), or where the restored world
-        /// would enclose the player (in the cut doorway), puts the player back where they placed from. Standing on
-        /// ground that exists either way (the court) keeps them where they are.
+        /// Rewinding puts the player back where they placed from: standing on what the placement created (the
+        /// pasted stair), where the restored world would enclose them (in the cut doorway), and also on ground that
+        /// exists either way (the court): a rewind never leaves the player somewhere the placement got them to.
         /// </summary>
         [UnityTest]
         public IEnumerator Rewind_LeavesThePlayerSomewhereSafe([Values("t1:onstairs", "t2:indoor", "t1:court")] string scenario)
@@ -341,10 +341,7 @@ namespace Ion.Tests.PlayMode
             Vector3 p = Player.transform.position;
             Assert.AreEqual(respawns, Player.RespawnCount, "fell out of the world after rewinding. " + State);
             Assert.IsTrue(Player.IsGrounded, "not standing after rewind. " + State);
-            if (scenario == "t1:court")
-                Assert.Less(Vector3.Distance(p, walk.End), 0.3f, "standing on real ground: rewinding should not move the player. " + State);
-            else
-                Assert.Less(Vector3.Distance(p, placedFrom), 0.4f, "should be back at the placement spot. " + State);
+            Assert.Less(Vector3.Distance(p, placedFrom), 0.4f, "should be back at the placement spot. " + State);
         }
 
         // ------------------------------------------------------------------ the player is never part of a photo

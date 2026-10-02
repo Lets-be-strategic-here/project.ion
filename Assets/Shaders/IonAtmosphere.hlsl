@@ -14,6 +14,7 @@ float4 _IonFogParams;     // x = start (m), y = density (1/m), z = enabled (0/1)
 float4 _IonFogHeight;     // x = extra density factor below the eye, y = metres below the eye where it starts, z = 1 / ramp (m)
 float4 _IonUltraFxAtmo;   // Ultra (UltraFx): y = fog sun in-scattering strength (0 elsewhere)
 float4 _IonGrade;         // x = contrast, y = lift (< 0 deepens the darks), z = pivot (display luma), w = enabled (0/1)
+float4 _IonRewindFx;      // rewind glide (ScreenFx): x = desaturation 0..1, y = tape band strength 0..1, z = band phase (cycles), w = 1 / screen height (px)
 
 // Sky colour seen along a world direction: vertical three-colour gradient, warmer towards the sun
 // near the horizon (golden hour), plus the soft sun halo (not the disc).
@@ -88,9 +89,31 @@ float IonGradeHash(float2 p)
     return frac((p3.x + p3.y) * p3.z);
 }
 
+// Rewind glide look (art bible §9.1), zero cost when idle (one uniform branch): the world desaturates
+// toward a cool cyanotype grey, two soft tracking bands roll up the frame with a slight horizontal wobble,
+// and faint 2 px scanlines show through. Display space (inside IonGrade), screen pixels from SV_Position.
+float3 IonRewindFx(float3 g, float2 pixel)
+{
+    if (_IonRewindFx.x + _IonRewindFx.y < 1e-4) return g;
+    float y = dot(g, float3(0.2126, 0.7152, 0.0722));
+    g = lerp(g, y * float3(0.93, 0.98, 1.05), _IonRewindFx.x);
+    float v = pixel.y * _IonRewindFx.w;                              // 0..1 over the screen height
+    float p = frac(v * 2.0 + _IonRewindFx.z * 2.0);                  // two bands per frame
+    float wob = sin(pixel.x * 0.011 + _IonRewindFx.z * 37.0) * 0.012; // the bands' edges wobble
+    float band = smoothstep(0.0, 0.035, p + wob) * (1.0 - smoothstep(0.05, 0.11, p + wob));
+    float scan = 0.5 + 0.5 * cos(pixel.y * 3.14159265);              // alternate rows
+    float s = _IonRewindFx.y;
+    g = g * (1.0 - 0.04 * s * scan) + band * s * (0.08 + 0.04 * (1.0 - y));
+    return g;
+}
+
 float3 IonGrade(float3 linearColor, float2 pixel)
 {
-    if (_IonGrade.w < 0.5) return linearColor;
+    if (_IonGrade.w < 0.5)
+    {
+        if (_IonRewindFx.x + _IonRewindFx.y < 1e-4) return linearColor;
+        return pow(saturate(IonRewindFx(pow(max(linearColor, 0.0), 1.0 / 2.2), pixel)), 2.2);
+    }
     float3 g = pow(max(linearColor, 0.0), 1.0 / 2.2);         // ~display space
     float y = dot(g, float3(0.2126, 0.7152, 0.0722));
     float t = saturate(y / max(_IonGrade.z, 1e-3));
@@ -100,6 +123,7 @@ float3 IonGrade(float3 linearColor, float2 pixel)
     float3 add = g + (y2 - y);
     float3 mul = g * (y2 / max(y, 1e-3));
     g = lerp(add, mul, 0.3);
+    g = IonRewindFx(g, pixel);
     g += (IonGradeHash(pixel) - 0.5) * (1.0 / 255.0);
     return pow(saturate(g), 2.2);
 }

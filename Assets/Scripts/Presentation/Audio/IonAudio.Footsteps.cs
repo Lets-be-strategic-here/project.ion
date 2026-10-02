@@ -235,6 +235,11 @@ namespace Ion.Presentation.Audio
                 _hasLastFeet = false;
             }
             if (fpc == null) return;
+            if (fpc.IsGliding)
+            {
+                _hasLastFeet = false; // a rewind glide: no steps, and no landing where it settles
+                return;
+            }
 
             Vector3 pos = fpc.transform.position;
             if (!_hasLastFeet)

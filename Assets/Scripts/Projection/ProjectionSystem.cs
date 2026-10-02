@@ -112,6 +112,8 @@ namespace Ion.Projection
             public readonly List<Renderer> DisabledRenderers = new List<Renderer>();
             public readonly List<Collider> DisabledColliders = new List<Collider>();
             public readonly List<GameObject> Deactivated = new List<GameObject>();
+            /// <summary>Renderers of the pasted photo pieces (presentation: develop / un-develop).</summary>
+            public readonly List<Renderer> Pasted = new List<Renderer>();
         }
 
         readonly List<PlacementRecord> _undo = new List<PlacementRecord>();
@@ -125,6 +127,18 @@ namespace Ion.Projection
 
         /// <summary>Renderers of the photo pieces pasted by the most recent placement (presentation effects).</summary>
         public IReadOnlyList<Renderer> LastPastedRenderers => _lastPasted;
+
+        /// <summary>
+        /// Adds the renderers of the pieces the most recent placement pasted (the one a rewind would undo next) to
+        /// <paramref name="into"/>: the rewind "un-develops" them before they go.
+        /// </summary>
+        public void GetTopPastedRenderers(List<Renderer> into)
+        {
+            if (into == null || _undo.Count == 0) return;
+            List<Renderer> pasted = _undo[_undo.Count - 1].Pasted;
+            for (int i = 0; i < pasted.Count; i++)
+                if (pasted[i] != null) into.Add(pasted[i]);
+        }
 
         /// <summary>Cut pieces still waiting for their (deferred) collider.</summary>
         public int DeferredColliderCount => _deferredColliders.Count;
@@ -433,7 +447,11 @@ namespace Ion.Projection
         {
             GameObject pasted = SpawnPhotoPiece(piece, viewerFrame, root);
             record.Spawned.Add(pasted);
-            if (pasted.TryGetComponent(out MeshRenderer pr)) _lastPasted.Add(pr);
+            if (pasted.TryGetComponent(out MeshRenderer pr))
+            {
+                _lastPasted.Add(pr);
+                record.Pasted.Add(pr);
+            }
         }
 
         /// <summary>One Sliceable's share of a placement cut (with the frustum in _planes).</summary>

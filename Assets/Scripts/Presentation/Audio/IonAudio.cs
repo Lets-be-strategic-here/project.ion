@@ -123,6 +123,15 @@ namespace Ion.Presentation.Audio
             if (l != null) l.Volume = Mathf.Max(0f, volume);
         }
 
+        /// <summary>Changes a running loop's pitch (playback rate: pitch and speed together; the rewind tape).</summary>
+        public static void SetLoopPitch(LoopHandle handle, float pitch)
+        {
+            var inst = Instance;
+            if (inst == null || !handle.IsValid) return;
+            Loop l = inst.FindLoop(handle.Id);
+            if (l != null) l.Source.pitch = Mathf.Max(0.05f, l.Def.Pitch * pitch); // the web only supports positive pitch
+        }
+
         public static bool IsLoopActive(LoopHandle handle)
         {
             var inst = Instance;

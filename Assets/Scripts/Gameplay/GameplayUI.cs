@@ -56,11 +56,17 @@ namespace Ion.Gameplay
 
         static bool Quiet => Ion.Levels.GameBootstrap.Restarting;
 
-        /// <summary>A rewound photo flies from the middle of the screen back into the inventory strip.</summary>
+        /// <summary>
+        /// A rewound photo flies from the middle of the screen back into the inventory strip. During a rewind
+        /// glide it is timed to land as the glide settles.
+        /// </summary>
         public static void PhotoReturned(Ion.Projection.PhotoData photo)
         {
             var hud = Hud;
-            if (hud != null && !Quiet) hud.FlyInFromCenter(photo);
+            if (hud == null || Quiet) return;
+            var rewind = Ion.Gameplay.State.RewindController.Instance;
+            float seconds = rewind != null ? rewind.GlideRemaining : 0f;
+            hud.FlyInFromCenter(photo, seconds > 0.05f ? Mathf.Max(seconds, Ion.Presentation.Motion.Feel.PickupFlySeconds) : 0f);
         }
 
         /// <summary>A collected photo pops from its spot in the world into the inventory strip.</summary>

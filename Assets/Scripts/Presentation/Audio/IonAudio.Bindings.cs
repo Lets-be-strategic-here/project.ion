@@ -17,8 +17,10 @@ namespace Ion.Presentation.Audio
     /// Subscribed (gameplay code must NOT also call Play for these; if it does, the retrigger guard drops the
     /// duplicate):
     /// - ProjectionSystem.Placed                        -> photo_place + duck
-    /// - WorldHistory.Rewound(result)                   -> photo_rewind + tape-dip (Undid, RecoveredFall),
+    /// - WorldHistory.Rewound(result)                   -> photo_rewind + tape-dip (Undid without a glide, RecoveredFall),
     ///                                                     rewind_nothing (Nothing), rewind_checkpoint (ToCheckpoint)
+    /// - RewindController glide (polled) / GlideEnded   -> rewind_tape_loop, its pitch and level following the
+    ///                                                     glide's speed, music tape-dip; rewind_settle as it lands
     /// - WorldHistory.FallRecovered                     -> photo_rewind (also covers the limbo auto-recover)
     /// - WorldHistory.CheckpointReached                 -> checkpoint_set (after the teleport sound settles)
     /// - SafePoseTracker.FallingChanged / LimboChanged  -> fall_whoosh, limbo drone + music muffle
@@ -70,17 +72,22 @@ namespace Ion.Presentation.Audio
         readonly Dictionary<CameraPickup, bool> _cameraPickups = new Dictionary<CameraPickup, bool>();
         readonly List<Mover> _moverScratch = new List<Mover>();
 
+        LoopHandle _tapeLoop;
+        bool _wasGliding;
+
         /// <summary>Event sounds stay quiet while the level builds, during a restart and right after it.</summary>
         bool Quiet => InStartupGrace || GameBootstrap.Restarting || Time.unscaledTime < _quietUntil;
 
         void AwakeBindings()
         {
+            RewindController.GlideEnded += OnGlideEnded;
             SwitchBoard.ChannelChanged += OnChannelChanged;
             GameBootstrap.Restarted += OnRestarted;
         }
 
         void DestroyBindings()
         {
+            RewindController.GlideEnded -= OnGlideEnded;
             SwitchBoard.ChannelChanged -= OnChannelChanged;
             GameBootstrap.Restarted -= OnRestarted;
             UnbindPlayer();
@@ -108,6 +115,7 @@ namespace Ion.Presentation.Audio
 
             PollPlayerState();
             PollDevices();
+            PollRewindGlide();
 
             if (_pendingChimeAt >= 0f && now >= _pendingChimeAt)
             {
@@ -412,10 +420,47 @@ namespace Ion.Presentation.Audio
             _discoverSoon = true; // pasted devices (teleporters, switches, movers) need binding
         }
 
+        /// <summary>
+        /// The rewind glide's tape: a loop whose playback rate (pitch and chatter together) and level follow the
+        /// glide's speed, slow -> fast -> settling, so the sound rides the same curve as the body and the screen.
+        /// Back-to-back glides (a buffered press) keep the same tape running.
+        /// </summary>
+        void PollRewindGlide()
+        {
+            var rc = RewindController.Instance;
+            bool gliding = rc != null && rc.IsGliding;
+            if (gliding && !_wasGliding)
+            {
+                _rewoundTime = Time.unscaledTime;
+                if (!Quiet && !_tapeLoop.IsValid)
+                {
+                    _tapeLoop = StartLoop(Sfx.RewindTapeLoop, null, null, 0f, 0.04f);
+                    TapeDip(Feel.RewindMusicDip, rc.GlideSeconds);
+                    Duck(DuckDb, rc.GlideSeconds);
+                }
+            }
+            if (gliding && _tapeLoop.IsValid)
+            {
+                SetLoopPitch(_tapeLoop, Mathf.Lerp(Feel.RewindTapePitchMin, Feel.RewindTapePitchMax, rc.GlideSpeed01));
+                SetLoopVolume(_tapeLoop, Feel.RewindTapeVolume * rc.GlideFx);
+            }
+            if (!gliding && _tapeLoop.IsValid) StopLoop(ref _tapeLoop, 0.08f);
+            _wasGliding = gliding;
+        }
+
+        void OnGlideEnded()
+        {
+            _rewoundTime = Time.unscaledTime;
+            if (!Quiet) Play(Sfx.RewindSettle);
+        }
+
         void OnRewound(RewindResult result)
         {
             _rewoundTime = Time.unscaledTime;
             _discoverSoon = true;
+            var rewind = RewindController.Instance;
+            if (result == RewindResult.Undid && rewind != null && rewind.IsGliding)
+                return; // the glide's tape and settle carry it (PollRewindGlide, OnGlideEnded)
             switch (result)
             {
                 case RewindResult.Undid:

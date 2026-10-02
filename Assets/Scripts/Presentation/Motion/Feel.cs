@@ -51,6 +51,40 @@ namespace Ion.Presentation.Motion
         /// <summary>A second R within this window escalates to the checkpoint (RewindController.DoubleTapWindow).</summary>
         public const float DoubleTapWindow = 0.35f;
 
+        // Single R that undoes a change: the player glides back to the pose they made it from (no fade, no
+        // teleport). Position follows Ease.Smootherstep over RewindGlideSeconds(distance); the look slerps on the
+        // same curve; every rewind effect (desaturation, tape bands, vignette, tape sound) follows its speed.
+        public const float RewindGlideBaseSeconds = 0.80f;               // any glide, however short
+        public const float RewindGlidePerMeter = 0.04f;                  // + this per metre of travel ...
+        public const float RewindGlideMaxSeconds = 1.60f;                // ... capped here (20 m and beyond)
+        public const float RewindGlideUndoAt = 0.24f;                    // world undo (after the un-develop)
+        public const float RewindUndevelopSeconds = RewindGlideUndoAt;   // pasted pieces wash back to paper first
+        public const float RewindUndevelopGlow = 0.62f;                  // FreshPulse warm glow at full un-develop
+        public const float RewindGlideArcMax = 1.8f;                     // highest lift when the straight line is blocked
+        public const float RewindGlideArcSpeed = 4f;                     // m/s the arc height may change mid-glide
+        public const float RewindGlideCoverSeconds = 0.12f;              // Paper veil while the eye crosses a surface
+        public const int RewindQueueMax = 1;                             // R presses buffered during a glide
+        public const float RewindFxDesat = 0.62f;                        // world desaturation at full speed
+        public const float RewindFxBands = 1f;                           // tape / scanline band strength at full speed
+        public const float RewindFxBandCycles = 2.2f;                    // bands rolled through the frame per glide
+        public const float RewindFxVignette = 0.30f;                     // vignette alpha at full speed
+        public const float RewindTapePitchMin = 0.55f, RewindTapePitchMax = 1.55f;  // tape loop pitch: rest → full speed
+        public const float RewindTapeVolume = 0.85f;
+        public const float RewindMusicDip = 0.9f;                        // music tape-dip during a glide
+
+        /// <summary>Glide duration for a travel distance: 0.8 s + 0.04 s/m, at most 1.6 s.</summary>
+        public static float RewindGlideSeconds(float distance) =>
+            Mathf.Min(RewindGlideMaxSeconds, RewindGlideBaseSeconds + RewindGlidePerMeter * Mathf.Max(0f, distance));
+
+        /// <summary>Glide position along the path (0..1) at normalised time <paramref name="k"/>.</summary>
+        public static float RewindGlideEase(float k) => Ease.Smootherstep(k);
+
+        /// <summary>
+        /// Rewind effect strength (0..1) at normalised glide time <paramref name="k"/>: the glide's speed, with a
+        /// fuller shoulder (√ of the normalised smootherstep speed) so the effects read early and settle with it.
+        /// </summary>
+        public static float RewindFxEnvelope(float k) => Mathf.Sqrt(Ease.SmootherstepSpeed(k));
+
         public const float CheckpointSeconds = 1.00f;
         public const float CheckpointCloseSeconds = 0.35f;               // brackets close, easeInOutCubic
         public const float CheckpointSwapAt = 0.40f;

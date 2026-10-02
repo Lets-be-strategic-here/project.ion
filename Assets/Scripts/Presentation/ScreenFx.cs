@@ -13,8 +13,12 @@ namespace Ion.Presentation
     /// <see cref="Feel"/> (art bible §9.1). All Images, no post-processing: a few quads for a fraction of a
     /// second.
     ///  * place: a Frost flash 30 % → 0 over 0.35 s (easeOutQuart) at the world swap, and the FOV kick;
-    ///  * rewind: a Cyanotype wash 0 → 22 % → 0 with a desaturating Paper veil (sine in-out, 0.6 s);
-    ///  * pose moves under a rewind: fade to Paper (0.18 s easeInQuad), hold, fade back (0.30 s easeOutCubic);
+    ///  * rewind glide (an undo): following the glide's speed (<see cref="Ion.Gameplay.State.RewindController.GlideFx"/>),
+    ///    the world desaturates toward a cool grey and faint tape / scanline bands roll through it (a global
+    ///    read by the shared IonGrade in the world shaders: no extra pass), with a slight Cyanotype vignette;
+    ///    a soft Paper veil covers the moment the eye passes through a surface;
+    ///  * fall recovery: a Cyanotype wash 0 → 22 % → 0 with a desaturating Paper veil (sine in-out, 0.6 s), and
+    ///    the pose move under a fade to Paper (0.18 s easeInQuad), hold, fade back (0.30 s easeOutCubic);
     ///  * checkpoint: two crop brackets close from the screen edges, the world is restored behind them, they
     ///    open again (a crossfade with reduced motion);
     ///  * limbo: a Cyanotype vignette closes in (0.8 s easeOutCubic);
@@ -55,6 +59,10 @@ namespace Ion.Presentation
         bool _limbo;
         float _limboT;
 
+        Image _rewindVignette, _glideCover;
+        bool _glideFxOn;
+        static readonly int RewindFxId = Shader.PropertyToID("_IonRewindFx");
+
         Image _white;
         float _transT = -1f;
         bool _transFired;
@@ -73,6 +81,7 @@ namespace Ion.Presentation
 
         void OnDestroy()
         {
+            if (_glideFxOn) Shader.SetGlobalVector(RewindFxId, Vector4.zero);
             if (_projection != null) _projection.Placed -= OnPlaced;
             if (Instance == this) Instance = null;
         }
@@ -225,6 +234,39 @@ namespace Ion.Presentation
             UpdateIris(dt);
             UpdateLimbo(udt);
             UpdateTransition(dt);
+            UpdateGlideFx();
+        }
+
+        /// <summary>
+        /// The rewind glide's look, every value on the glide's own curve: desaturation and tape bands (shader
+        /// global, bands rolling with the glide's position so they rush in the middle and settle with it),
+        /// the vignette, and the Paper veil while the eye crosses a surface.
+        /// </summary>
+        void UpdateGlideFx()
+        {
+            var rc = Ion.Gameplay.State.RewindController.Instance;
+            float fx = rc != null ? rc.GlideFx : 0f;
+            float cover = rc != null ? rc.GlideCover : 0f;
+            if (fx <= 0.0005f && cover <= 0.0005f)
+            {
+                if (_glideFxOn)
+                {
+                    _glideFxOn = false;
+                    Shader.SetGlobalVector(RewindFxId, Vector4.zero);
+                    _rewindVignette.enabled = false;
+                    _glideCover.enabled = false;
+                }
+                return;
+            }
+            _glideFxOn = true;
+            float bands = Feel.RewindFxBands * fx * (Feel.ReducedMotion ? 0.35f : 1f);
+            float phase = Feel.RewindFxBandCycles * (rc != null ? rc.GlideEased : 0f);
+            float invH = 1f / Mathf.Max(1f, Screen.height);
+            Shader.SetGlobalVector(RewindFxId, new Vector4(Feel.RewindFxDesat * fx, bands, phase, invH));
+            _rewindVignette.enabled = true;
+            _rewindVignette.color = UIUtil.WithAlpha(UIPalette.Cyanotype, Feel.RewindFxVignette * fx);
+            _glideCover.enabled = cover > 0.001f;
+            _glideCover.color = UIUtil.WithAlpha(UIPalette.Paper, Ease.InOutSine(cover));
         }
 
         void UpdateFlash(float dt)
@@ -415,6 +457,11 @@ namespace Ion.Presentation
             UIUtil.Stretch(_vignette.rectTransform);
             _vignette.enabled = false;
 
+            _rewindVignette = UIUtil.NewImage("RewindVignette", _root, UIUtil.WithAlpha(UIPalette.Cyanotype, 0f), VignetteSprite);
+            UIUtil.Stretch(_rewindVignette.rectTransform);
+            _rewindVignette.raycastTarget = false;
+            _rewindVignette.enabled = false;
+
             _veil = UIUtil.NewImage("RewindVeil", _root, new Color(0.78f, 0.78f, 0.8f, 0f));
             UIUtil.Stretch(_veil.rectTransform);
             _veil.enabled = false;
@@ -433,6 +480,11 @@ namespace Ion.Presentation
             _paper = UIUtil.NewImage("PaperFade", _root, UIUtil.WithAlpha(UIPalette.Paper, 0f));
             UIUtil.Stretch(_paper.rectTransform);
             _paper.enabled = false;
+
+            _glideCover = UIUtil.NewImage("RewindCover", _root, UIUtil.WithAlpha(UIPalette.Paper, 0f));
+            UIUtil.Stretch(_glideCover.rectTransform);
+            _glideCover.raycastTarget = false;
+            _glideCover.enabled = false;
 
             _white = UIUtil.NewImage("Transition", _root, UIUtil.WithAlpha(UIPalette.Frost, 0f));
             UIUtil.Stretch(_white.rectTransform);

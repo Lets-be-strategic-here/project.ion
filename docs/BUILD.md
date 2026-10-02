@@ -64,6 +64,11 @@ textures, WebGL2 only, and the custom template `PROJECT:Ion` (`Assets/WebGLTempl
 Web player it only installs when the page URL has `?debug=1`, e.g. `http://localhost:8080/?debug=1`.
 Automation scripts must append it.
 
+Rewind has two paths too. `Rewind` / `Rewind2` are instant (`WorldHistory.RewindOnce` / `RewindToCheckpoint`: the
+solvability tests use them). `RewindPress` is one real press of R (`RewindController.PressRewind`: the glide back with its
+desaturation, tape bands, vignette, tape sound and returning photo; two presses within 0.35 s escalate to the checkpoint),
+and `Rewind2Press` the real R R. `TimeScale("0.25")` slows a transition down for screenshots (`TimeScale("")` = 1).
+
 Placement has two paths. `Place` is immediate: the whole cut and paste lands in one frame, which is what the
 solvability tests use. `PlacePress` is the player's LMB path. The press-in holds the view still with the raised
 photo covering exactly the frustum. Behind it, `ProjectionSystem.BeginStagedPlace` spreads the cuts, the paste

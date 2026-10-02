@@ -113,6 +113,33 @@ namespace Ion.Tests.PlayMode
 
         protected static IEnumerator Seconds(float s) => Frames(Mathf.CeilToInt(s / Step));
 
+        /// <summary>Waits until the rewind transition (and any buffered press) has played out, then a few frames.</summary>
+        protected IEnumerator WaitRewindSettled(float maxSeconds = 6f)
+        {
+            int guard = Mathf.CeilToInt(maxSeconds / Step);
+            while (Rewinder.Busy && guard-- > 0) yield return null;
+            Assert.IsFalse(Rewinder.Busy, "the rewind settles within " + maxSeconds + " s. " + State);
+            yield return Frames(5);
+        }
+
+        /// <summary>Standing still: no horizontal velocity, and vertically only the CharacterController's ground snap.</summary>
+        protected void AssertStill(string what)
+        {
+            Vector3 v = Player.Velocity;
+            Assert.Less(new Vector2(v.x, v.z).magnitude, 1e-3f, what + ": horizontal " + v);
+            Assert.Greater(v.y, -2.5f, what + ": vertical " + v + " (more than the grounded snap)");
+            Assert.LessOrEqual(v.y, 0f, what + ": vertical " + v);
+        }
+
+        /// <summary>The feet and look match <paramref name="pose"/> (feet within <paramref name="tolerance"/> m).</summary>
+        protected void AssertAtPose(PlayerPose pose, float tolerance, string what)
+        {
+            Vector3 feet = Player.transform.position;
+            Assert.Less(Vector3.Distance(pose.Feet, feet), tolerance, what + ": feet " + feet + " vs " + pose + ". " + State);
+            Assert.AreEqual(0f, Mathf.DeltaAngle(pose.Yaw, Player.Yaw), 0.5f, what + ": yaw");
+            Assert.AreEqual(pose.Pitch, Player.Pitch, 0.5f, what + ": pitch");
+        }
+
         protected string State =>
             $"feet {Player.transform.position} grounded {Player.IsGrounded} depth {History.Depth} " +
             $"placements {Projection.PlacementCount} photos {Inventory.Count} cp {History.LastCheckpoint}";
@@ -186,37 +213,87 @@ namespace Ion.Tests.PlayMode
             yield return PlaceBridge();
             Assert.IsFalse(Inventory.Contains(BridgePhoto), "the photo is consumed");
             Assert.IsTrue(FloorAt(new Vector3(0f, 0f, 12f)), "the bridge spans the gap");
+            WorldChange change = History.Top;
+            Assert.IsNotNull(change);
+            Assert.IsTrue(change.HasPose, "the placement records the player's pose");
+            PlayerPose placedFrom = change.Pose;
+            Assert.Less(Vector3.Distance(placedFrom.Feet, StartFeet), 0.1f, "recorded where it was placed from: " + placedFrom);
 
-            // Walk across and stand on floor B, long after the placement.
+            // Walk across and stand on solid floor B, long after the placement.
             yield return WalkTo(new Vector3(0f, 0f, 18f));
             Assert.Greater(Player.transform.position.z, 17f, "crossed on the pasted bridge. " + State);
+            Assert.IsTrue(Player.IsGrounded);
             yield return Seconds(1f);
 
-            RewindResult r = History.RewindOnce();
-            yield return Frames(5);
-            Assert.AreEqual(RewindResult.Undid, r);
+            // R (the player's path): the photo comes back AND the player glides back to where they placed it,
+            // even though floor B holds them. No "get the photo back after crossing".
+            Vector3? velocityAtSettle = null;
+            System.Action onSettled = () => velocityAtSettle = Player.Velocity;
+            RewindController.GlideEnded += onSettled;
+            Rewinder.PressRewind();
+            yield return null;
+            Assert.IsTrue(Rewinder.IsGliding, "an undo glides");
+            yield return WaitRewindSettled();
+            RewindController.GlideEnded -= onSettled;
+
+            Assert.AreEqual(RewindResult.Undid, Rewinder.LastResult);
+            Assert.IsTrue(velocityAtSettle.HasValue, "GlideEnded fired");
+            Assert.AreEqual(Vector3.zero, velocityAtSettle.Value, "the glide ends with zero velocity");
             Assert.AreEqual(0, Projection.PlacementCount, "the placement is undone");
             Assert.IsTrue(Inventory.Contains(BridgePhoto), "the photo is back in the hand");
             Assert.IsFalse(FloorAt(new Vector3(0f, 0f, 12f)), "the gap is open again");
-            Assert.Greater(Player.transform.position.z, 17f, "still supported on floor B: the player stays. " + State);
-            Assert.IsTrue(Player.IsGrounded);
+            AssertAtPose(placedFrom, 0.05f, "back at the placement pose");
+            Assert.Less(Player.transform.position.z, 10f, "on the near side of the gap. " + State);
+            Assert.IsTrue(Player.IsGrounded, "standing. " + State);
+            Assert.IsTrue(Player.Controller.enabled, "the CharacterController is back on");
+            AssertStill("no velocity left over from the glide");
+            Assert.AreEqual(0, Player.RespawnCount, "not a respawn");
+            Assert.IsFalse(Tracker.IsFalling || Tracker.InLimbo);
+
+            // It stays there: a second later the player is still on floor A, where they placed from.
+            yield return Seconds(1f);
+            AssertAtPose(placedFrom, 0.05f, "still there");
+        }
+
+        [UnityTest]
+        public IEnumerator Rewind_InstantPath_AlsoReturnsToThePose()
+        {
+            // The synchronous path (WorldHistory.RewindOnce: tests, debug harness, last resort) follows the same rule.
+            yield return PlaceBridge();
+            PlayerPose placedFrom = History.Top.Pose;
+            yield return WalkTo(new Vector3(2f, 0f, 20f));
+            Assert.AreEqual(RewindResult.Undid, History.RewindOnce());
+            yield return Frames(5);
+            AssertAtPose(placedFrom, 0.05f, "instant rewind");
+            Assert.IsTrue(Player.IsGrounded, State);
+            Assert.AreEqual(0, Player.RespawnCount);
         }
 
         [UnityTest]
         public IEnumerator Rewind_AnywhereUndoesLast_Placement_MovesUnsupportedPlayerToSafety()
         {
             yield return PlaceBridge();
+            PlayerPose placedFrom = History.Top.Pose;
             yield return WalkTo(new Vector3(0f, 0f, 12f)); // standing on the pasted part, over the gap
             Assert.AreEqual(12f, Player.transform.position.z, 0.5f, State);
 
-            // The full player path: R, with its transition.
+            // The full player path: R, with its glide. The bridge dissolves under the player while they glide
+            // back: no fall, ever.
             Rewinder.PressRewind();
-            yield return Seconds(1.2f);
+            float minY = float.MaxValue;
+            int guard = 600;
+            while (Rewinder.Busy && guard-- > 0)
+            {
+                minY = Mathf.Min(minY, Player.transform.position.y);
+                Assert.IsFalse(Tracker.IsFalling, "never falls during the glide. " + State);
+                yield return null;
+            }
+            yield return Frames(5);
             Assert.IsFalse(Rewinder.Busy);
             Assert.AreEqual(RewindResult.Undid, Rewinder.LastResult);
             Assert.AreEqual(0, Projection.PlacementCount);
-            Vector3 feet = Player.transform.position;
-            Assert.Less(feet.z, 10f, "moved off the vanished bridge to where the photo was placed from. " + State);
+            Assert.Greater(minY, placedFrom.Feet.y - 0.1f, "the glide never sinks into the gap");
+            AssertAtPose(placedFrom, 0.05f, "moved off the vanished bridge to where the photo was placed from");
             Assert.IsTrue(Player.IsGrounded, "on solid ground. " + State);
             Assert.AreEqual(0, Player.RespawnCount, "no fall");
         }
@@ -232,13 +309,15 @@ namespace Ion.Tests.PlayMode
             Assert.IsNotNull(snap);
             Assert.AreEqual(2, InstantCam.Film);
             Assert.IsTrue(Inventory.Contains(snap));
+            PlayerPose shotFrom = History.Top.Pose;
 
             yield return WalkTo(new Vector3(2f, 0f, 7f));
             yield return Seconds(0.5f);
             Assert.AreEqual(RewindResult.Undid, History.RewindOnce());
             Assert.AreEqual(3, InstantCam.Film, "the film comes back");
             Assert.IsFalse(Inventory.Contains(snap), "the snapshot is gone");
-            Assert.AreEqual(2f, Player.transform.position.x, 0.4f, "supported: stays where it was rewound from");
+            yield return Frames(3);
+            AssertAtPose(shotFrom, 0.05f, "back where the shot was taken, though the floor held the player");
         }
 
         [UnityTest]
@@ -252,11 +331,13 @@ namespace Ion.Tests.PlayMode
             yield return Seconds(Feel.MoverSeconds(6f) + 0.3f); // 6 m of travel: 1.6 s per 4 m
             Assert.AreEqual(bridge.OnLocal.x, bridge.transform.localPosition.x, 0.01f, "the bridge slid in");
 
+            PlayerPose pressedFrom = History.Top.Pose;
             yield return WalkTo(new Vector3(2f, 0f, 6f));
             Assert.AreEqual(RewindResult.Undid, History.RewindOnce());
             Assert.IsFalse(SwitchBoard.Get("test.span"), "the channel is off again");
             yield return Seconds(0.6f); // rewind speed: 0.35 s
             Assert.AreEqual(bridge.OffLocal.x, bridge.transform.localPosition.x, 0.01f, "the bridge slid back");
+            AssertAtPose(pressedFrom, 0.05f, "back where the button was pressed from");
         }
 
         [UnityTest]
@@ -273,12 +354,22 @@ namespace Ion.Tests.PlayMode
             Assert.IsTrue(pickup.Collected, "walked into it. " + State);
             Assert.IsTrue(Inventory.Contains(BridgePhoto));
 
+            PlayerPose pickedFrom = History.Top.Pose;
             yield return WalkTo(new Vector3(-2f, 0f, 3f));
             Assert.AreEqual(RewindResult.Undid, History.RewindOnce());
             yield return null;
             Assert.IsFalse(pickup.Collected);
             Assert.IsTrue(pickup.gameObject.activeSelf, "the photo lies where it was");
             Assert.IsFalse(Inventory.Contains(BridgePhoto));
+            AssertAtPose(pickedFrom, 0.05f, "back where it was picked up");
+
+            // Standing on it after the rewind does not collect it again at once (that would undo the undo)...
+            yield return Seconds(0.5f);
+            Assert.IsFalse(pickup.Collected, "not re-collected by standing where the rewind put the player");
+            // ...stepping away and walking back in does.
+            yield return WalkTo(new Vector3(-1f, 0f, 3f));
+            yield return WalkTo(new Vector3(2f, 0f, 6f));
+            Assert.IsTrue(pickup.Collected, "walking into it again collects it. " + State);
         }
 
         [UnityTest]
@@ -424,22 +515,26 @@ namespace Ion.Tests.PlayMode
         {
             Switch a = MakeButton(new Vector3(-3f, 0f, 4f), "test.a");
             Switch b = MakeButton(new Vector3(3f, 0f, 4f), "test.b");
+            PlayerPose cpPose = History.LastCheckpoint.Pose;
             yield return null;
+            yield return WalkTo(new Vector3(-1.5f, 0f, 5f));
             Assert.IsTrue(a.Press());
+            PlayerPose poseA = History.Top.Pose;
+            yield return WalkTo(new Vector3(1.5f, 0f, 6f));
             Assert.IsTrue(b.Press());
             yield return WalkTo(new Vector3(-1.5f, 0f, 8f));
-            Vector3 there = Player.transform.position;
 
             Rewinder.PressRewind();
-            yield return Seconds(0.5f);           // outside the 0.35 s window
+            yield return Seconds(0.5f);           // outside the 0.35 s window (mid-glide: buffered)
             Rewinder.PressRewind();
-            yield return Seconds(1.2f);
+            yield return WaitRewindSettled();
 
             Assert.AreEqual(RewindResult.Undid, Rewinder.LastResult, "the second press is a single rewind");
             Assert.AreEqual(2, Rewinder.RewindCount);
             Assert.IsFalse(SwitchBoard.Get("test.a"));
             Assert.IsFalse(SwitchBoard.Get("test.b"));
-            Assert.Less(Vector3.Distance(there, Player.transform.position), 0.3f, "not sent to the checkpoint. " + State);
+            AssertAtPose(poseA, 0.05f, "two singles: back where the first press was made");
+            Assert.Greater(Vector3.Distance(cpPose.Feet, Player.transform.position), 2f, "not sent to the checkpoint. " + State);
         }
 
         [UnityTest]
@@ -461,6 +556,179 @@ namespace Ion.Tests.PlayMode
             Assert.AreEqual(RewindResult.ToCheckpoint, Rewinder.LastResult);
             Assert.IsFalse(SwitchBoard.Get("test.a") || SwitchBoard.Get("test.f1") || SwitchBoard.Get("test.f2"));
             Assert.Less(Vector3.Distance(cpPose.Feet, Player.transform.position), 0.3f, State);
+        }
+
+        [UnityTest]
+        public IEnumerator Rewind_SuccessivePresses_WalkBackThroughPoses()
+        {
+            Switch a = MakeButton(new Vector3(-3f, 0f, 4f), "test.m1");
+            Switch b = MakeButton(new Vector3(3f, 0f, 4f), "test.m2");
+            InstantCam.SetUnlockedSilently(true);
+            InstantCam.Film = 3;
+            yield return null;
+
+            // Three changes, each from its own pose (and look).
+            yield return WalkTo(new Vector3(-1.5f, 0f, 4.5f));
+            Player.SetLook(270f, 10f);
+            yield return null;
+            Assert.IsTrue(a.Press());
+            PlayerPose p1 = History.Top.Pose;
+            yield return WalkTo(new Vector3(1.5f, 0f, 6.5f));
+            Player.SetLook(90f, -5f);
+            yield return null;
+            Assert.IsTrue(b.Press());
+            PlayerPose p2 = History.Top.Pose;
+            yield return WalkTo(new Vector3(0f, 0f, 8.5f));
+            Player.SetLook(180f, 0f);
+            yield return null;
+            PhotoData snap = InstantCam.TryCapture();
+            Assert.IsNotNull(snap);
+            PlayerPose p3 = History.Top.Pose;
+            yield return WalkTo(new Vector3(-3f, 0f, 9f));
+
+            // Each R undoes one change and returns to the pose it was made from, newest first.
+            Rewinder.PressRewind();
+            yield return WaitRewindSettled();
+            Assert.IsFalse(Inventory.Contains(snap), "1st R: the capture");
+            Assert.IsTrue(SwitchBoard.Get("test.m2"));
+            AssertAtPose(p3, 0.05f, "1st R");
+
+            Rewinder.PressRewind();
+            yield return WaitRewindSettled();
+            Assert.IsFalse(SwitchBoard.Get("test.m2"), "2nd R: the second press");
+            Assert.IsTrue(SwitchBoard.Get("test.m1"));
+            AssertAtPose(p2, 0.05f, "2nd R");
+
+            Rewinder.PressRewind();
+            yield return WaitRewindSettled();
+            Assert.IsFalse(SwitchBoard.Get("test.m1"), "3rd R: the first press");
+            AssertAtPose(p1, 0.05f, "3rd R");
+            Assert.AreEqual(3, Rewinder.RewindCount);
+
+            // Then nothing is left above the checkpoint: no motion.
+            Rewinder.PressRewind();
+            yield return Seconds(0.5f);
+            Assert.AreEqual(RewindResult.Nothing, Rewinder.LastResult);
+            AssertAtPose(p1, 0.05f, "nothing to rewind");
+            Assert.IsTrue(Player.IsGrounded);
+            Assert.AreEqual(0, Player.RespawnCount);
+        }
+
+        [UnityTest]
+        public IEnumerator Rewind_PressDuringGlide_IsBufferedNeverBroken()
+        {
+            Switch a = MakeButton(new Vector3(-3f, 0f, 4f), "test.g1");
+            Switch b = MakeButton(new Vector3(3f, 0f, 4f), "test.g2");
+            Switch c = MakeButton(new Vector3(3f, 0f, 8f), "test.g3");
+            yield return null;
+            yield return WalkTo(new Vector3(-1.5f, 0f, 4f));
+            Assert.IsTrue(a.Press());
+            yield return WalkTo(new Vector3(1.5f, 0f, 5f));
+            Assert.IsTrue(b.Press());
+            PlayerPose poseB = History.Top.Pose;
+            yield return WalkTo(new Vector3(1.5f, 0f, 7.5f));
+            Assert.IsTrue(c.Press());
+            yield return WalkTo(new Vector3(-3f, 0f, 9.5f));
+
+            Rewinder.PressRewind();
+            yield return Seconds(0.4f);               // mid-glide, outside the double-tap window
+            Assert.IsTrue(Rewinder.IsGliding);
+            Rewinder.PressRewind();
+            Assert.AreEqual(1, Rewinder.QueuedPresses, "buffered");
+            Assert.IsTrue(Rewinder.IsGliding, "the glide carries on");
+            yield return Seconds(0.36f);              // still the first glide; the buffer is full
+            Assert.IsTrue(Rewinder.IsGliding);
+            Rewinder.PressRewind();
+            Assert.AreEqual(1, Rewinder.QueuedPresses, "at most one press is buffered");
+
+            // Mid-glide the body is a ghost: no collisions, no gravity, no fall, no input.
+            Assert.IsTrue(Player.IsGliding);
+            Assert.IsFalse(Player.Controller.enabled, "the CharacterController is off during the glide");
+            Assert.IsTrue(Player.Frozen);
+            Assert.IsFalse(Tracker.IsFalling);
+
+            yield return WaitRewindSettled();
+            Assert.AreEqual(2, Rewinder.RewindCount, "the glide plus the one buffered press");
+            Assert.IsFalse(SwitchBoard.Get("test.g3"));
+            Assert.IsFalse(SwitchBoard.Get("test.g2"));
+            Assert.IsTrue(SwitchBoard.Get("test.g1"), "the press beyond the buffer was dropped");
+            AssertAtPose(poseB, 0.05f, "where the buffered rewind's change was made");
+            Assert.IsTrue(Player.Controller.enabled);
+            Assert.IsTrue(Player.IsGrounded, State);
+            Assert.AreEqual(0, Player.RespawnCount);
+            AssertStill("at rest after the buffered glide");
+        }
+
+        [UnityTest]
+        public IEnumerator Rewind_GlideFollowsTheCurve()
+        {
+            Switch a = MakeButton(new Vector3(-3f, 0f, 4f), "test.c1");
+            yield return null;
+            Assert.IsTrue(a.Press());                 // from the start spot
+            PlayerPose from = History.Top.Pose;
+            yield return WalkTo(new Vector3(0f, 0f, 9f));
+            Vector3 start = Player.transform.position;
+            float distance = Vector3.Distance(start, from.Feet);
+            float expected = Feel.RewindGlideSeconds(distance);
+            Assert.AreEqual(Feel.RewindGlideBaseSeconds + Feel.RewindGlidePerMeter * distance, expected, 1e-4f);
+
+            Rewinder.PressRewind();
+            Assert.AreEqual(expected, Rewinder.GlideSeconds, 1e-4f, "duration from the distance");
+            var along = new List<float>();
+            float maxFx = 0f;
+            int frames = 0;
+            while (Rewinder.IsGliding && frames < 400)
+            {
+                yield return null;
+                frames++;
+                Vector3 p = Player.transform.position;
+                along.Add(Vector3.Dot(p - start, (from.Feet - start).normalized) / distance);
+                maxFx = Mathf.Max(maxFx, Rewinder.GlideFx);
+            }
+            float seconds = frames * Step;
+            Assert.AreEqual(expected, seconds, 2.5f * Step, "the glide lasts its duration");
+            Assert.Greater(maxFx, 0.95f, "the effects peak with the speed");
+
+            // Smootherstep: monotonic, slow start, fast middle, gentle settle.
+            int n = along.Count;
+            for (int i = 1; i < n; i++) Assert.GreaterOrEqual(along[i], along[i - 1] - 1e-4f, "monotonic at " + i);
+            float early = along[n / 10] - along[0];
+            float middle = along[n / 2 + n / 20] - along[n / 2 - n / 20];
+            float late = along[n - 1] - along[n - 1 - n / 10];
+            Assert.Less(early, middle * 0.5f, "slow start");
+            Assert.Less(late, middle * 0.5f, "gentle settle");
+            Assert.AreEqual(Feel.RewindGlideEase(0.5f), along[n / 2], 0.06f, "on the curve at the middle");
+            yield return Frames(5);
+            AssertAtPose(from, 0.05f, "lands exactly");
+        }
+
+        [UnityTest]
+        public IEnumerator DoubleRewind_DuringGlide_RestoresCheckpointPose()
+        {
+            PlayerPose cpPose = History.LastCheckpoint.Pose;
+            yield return PlaceBridge();
+            yield return WalkTo(new Vector3(2f, 0f, 18f));
+            Switch a = MakeButton(new Vector3(3.5f, 0f, 20f), "test.dg");
+            yield return null;
+            Assert.IsTrue(a.Press());
+            yield return WalkTo(new Vector3(-2f, 0f, 21f));
+
+            Rewinder.PressRewind();                   // glides back toward the press...
+            yield return Seconds(0.2f);
+            Assert.IsTrue(Rewinder.IsGliding);
+            Rewinder.PressRewind();                   // ...and the quick second press escalates mid-glide
+            Assert.IsFalse(Rewinder.IsGliding, "the glide stops where it is");
+            yield return WaitRewindSettled();
+
+            Assert.AreEqual(RewindResult.ToCheckpoint, Rewinder.LastResult);
+            Assert.AreEqual(0, Projection.PlacementCount);
+            Assert.IsFalse(SwitchBoard.Get("test.dg"));
+            Assert.Less(Vector3.Distance(cpPose.Feet, Player.transform.position), 0.3f, "checkpoint pose. " + State);
+            Assert.AreEqual(0f, Mathf.DeltaAngle(cpPose.Yaw, Player.Yaw), 0.5f);
+            Assert.IsFalse(Player.IsGliding);
+            Assert.IsTrue(Player.Controller.enabled);
+            Assert.IsTrue(Player.IsGrounded, State);
+            Assert.AreEqual(History.LastCheckpoint.HistoryDepth, History.Depth);
         }
 
         [UnityTest]

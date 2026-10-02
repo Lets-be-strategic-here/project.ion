@@ -122,6 +122,7 @@ namespace Ion.Gameplay.State
         {
             if (change == null) return;
             if (change.Time <= 0f) change.Time = UnityEngine.Time.time;
+            if (!change.HasPose && FirstPersonController.Current != null) change.At(PoseNow());
             _changes.Add(change);
             try { Pushed?.Invoke(change); }
             catch (Exception e) { Debug.LogException(e); }
@@ -136,6 +137,9 @@ namespace Ion.Gameplay.State
             return tracker != null ? tracker.CurrentSafe() : PlayerPose.Of(fpc);
         }
 
+        /// <summary>The player's exact pose now (feet, yaw, pitch): what a change being made now stores as its <see cref="WorldChange.Pose"/>.</summary>
+        public static PlayerPose PoseNow() => PlayerPose.Of(FirstPersonController.Current);
+
         // ---------------------------------------------------------------- rewind
 
         /// <summary>What a single R would do right now (no side effects).</summary>
@@ -146,7 +150,12 @@ namespace Ion.Gameplay.State
             return CanUndo ? RewindResult.Undid : RewindResult.Nothing;
         }
 
-        /// <summary>Single R. Priority: fall recovery &gt; undo the top record &gt; nothing.</summary>
+        /// <summary>
+        /// Single R, instantly. Priority: fall recovery &gt; undo the top record &gt; nothing. An undo always puts
+        /// the player back at the pose the change was made from (<see cref="WorldChange.Pose"/>, or its safe
+        /// fallback), wherever they are now: crossing on a placement and rewinding never leaves them across.
+        /// <see cref="RewindController"/> plays the same undo as a glide (<see cref="UndoTop"/>).
+        /// </summary>
         public RewindResult RewindOnce()
         {
             var fpc = FirstPersonController.Current;
@@ -164,19 +173,8 @@ namespace Ion.Gameplay.State
 
             if (CanUndo)
             {
-                WorldChange top = _changes[_changes.Count - 1];
-                _changes.RemoveAt(_changes.Count - 1);
-                UndoRecord(top, false);
-
-                // Stay if still supported in the same zone; otherwise go where the change was made from.
-                PlayerPose result = PlayerPose.Of(fpc);
-                if (fpc != null)
-                {
-                    bool sameZone = ZoneInfo.ZoneOf(fpc.transform.position) == top.SafePose.Zone;
-                    bool supported = sameZone && StandingCheck.IsSupported(fpc.transform.position);
-                    if (!supported && top.SafePose.Feet != Vector3.zero) result = top.SafePose;
-                    if (!supported) ApplyPose(fpc, result);
-                }
+                PlayerPose result = UndoTopCore();
+                if (fpc != null) ApplyPose(fpc, result);
                 if (tracker != null) tracker.Reset(result);
                 return Finish(RewindResult.Undid);
             }
@@ -184,17 +182,70 @@ namespace Ion.Gameplay.State
             return Finish(RewindResult.Nothing);
         }
 
+        /// <summary>The record a single R would undo now (null when nothing can be undone above the checkpoint).</summary>
+        public WorldChange Top => CanUndo ? _changes[_changes.Count - 1] : null;
+
         /// <summary>
-        /// True when undoing the top record would have to move the player (used by the presentation to fade
-        /// before the swap instead of after it). Evaluated against the current world, so it is a hint.
+        /// Where undoing the top record would return the player, judged against the current world (the glide
+        /// heads here before the undo; <see cref="UndoTop"/> confirms it against the restored world).
         /// </summary>
-        public bool TopUndoLikelyMovesPlayer()
+        public bool PeekReturnPose(out PlayerPose pose)
         {
-            if (!CanUndo) return false;
-            var fpc = FirstPersonController.Current;
-            if (fpc == null) return false;
+            WorldChange top = Top;
+            pose = top != null ? PreferredPose(top) : PlayerPose.Of(FirstPersonController.Current);
+            return top != null;
+        }
+
+        /// <summary>
+        /// Undoes the top record without moving the player and reports where they belong
+        /// (<paramref name="returnPose"/>): the caller moves them there (the rewind glide). Raises
+        /// <see cref="Rewound"/>(Undid). Nothing happens (and Nothing is returned) when there is nothing to undo.
+        /// </summary>
+        public RewindResult UndoTop(out PlayerPose returnPose)
+        {
+            returnPose = PlayerPose.Of(FirstPersonController.Current);
+            if (!CanUndo) return RewindResult.Nothing;
+            returnPose = UndoTopCore();
+            return Finish(RewindResult.Undid);
+        }
+
+        PlayerPose UndoTopCore()
+        {
             WorldChange top = _changes[_changes.Count - 1];
-            return top.Kind == ChangeKind.Placement || ZoneInfo.ZoneOf(fpc.transform.position) != top.SafePose.Zone;
+            _changes.RemoveAt(_changes.Count - 1);
+            UndoRecord(top, false);
+            return ResolveReturnPose(top);
+        }
+
+        /// <summary>The pose a change wants to return to, before any check: its exact pose, else its safe pose.</summary>
+        static PlayerPose PreferredPose(WorldChange c)
+        {
+            if (c.HasPose) return c.Pose;
+            if (c.SafePose.Feet != Vector3.zero) return c.SafePose;
+            return PlayerPose.Of(FirstPersonController.Current);
+        }
+
+        /// <summary>
+        /// Where the player goes after <paramref name="c"/> was undone (evaluate in the restored world): the exact
+        /// pose of the change when a player can stand there; otherwise the safe pose sampled then (looking the
+        /// same way as at the change); as a last resort the exact pose anyway.
+        /// </summary>
+        public static PlayerPose ResolveReturnPose(WorldChange c)
+        {
+            if (c == null) return PlayerPose.Of(FirstPersonController.Current);
+            if (c.HasPose && StandingCheck.IsSupported(c.Pose.Feet)) return c.Pose;
+            bool hasSafe = c.SafePose.Feet != Vector3.zero;
+            if (hasSafe && StandingCheck.IsSupported(c.SafePose.Feet))
+            {
+                PlayerPose p = c.SafePose;
+                if (c.HasPose)
+                {
+                    p.Yaw = c.Pose.Yaw;
+                    p.Pitch = c.Pose.Pitch;
+                }
+                return p;
+            }
+            return PreferredPose(c);
         }
 
         /// <summary>

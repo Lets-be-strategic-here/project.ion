@@ -52,6 +52,10 @@ namespace Ion.Presentation.Audio
         RewindNothing = 52,
         RewindCheckpoint = 53,
         CheckpointSet = 54,
+        /// <summary>The rewind glide's tape (a loop; IonAudio drives its pitch and level from the glide's speed).</summary>
+        RewindTapeLoop = 55,
+        /// <summary>The rewind glide settling: the tape stops, a soft in-key landing.</summary>
+        RewindSettle = 56,
 
         // Body.
         Land = 60,

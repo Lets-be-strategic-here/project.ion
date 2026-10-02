@@ -845,6 +845,7 @@ A floating plinth x[−11.5, 11.5] z[−11.5, 11.5].
   - ui_hover, ui_click
   - amb_wind_loop, amb_bird_0..3
   - **new for this redesign:** switch_press, switch_release, mover_loop (seamless), mover_stop, collapse_crack, collapse_fall, fall_whoosh, limbo_drone_loop, rewind_nothing (soft muted tick + falling minor second), rewind_checkpoint (0.9 s long tape rewind + low D bell), checkpoint_set (kalimba D–A), exhibit_wake (G# glass shimmer), hatch_rise.
+  - **rewind glide:** rewind_tape_loop (an exact 1 s loop of tape chattering past the heads; IonAudio drives its pitch / playback rate 0.55 → 1.55 → 0.55 and its level from the glide's speed) and rewind_settle (the tape stops with a soft clunk, D5 + A4 kalimba and F#4 felt piano).
 - **Footsteps** come from **Kenney Impact Sounds (CC0)**: concrete, grass and wood, 5 variants each.
   - They are converted to mono, trimmed and filtered by `ionsfx.py`.
   - The "tile" set is the concrete set high-passed.
@@ -862,7 +863,7 @@ A floating plinth x[−11.5, 11.5] z[−11.5, 11.5].
 - **Mix:**
   - Music at −20 LUFS. SFX peaks at −6 dBFS.
   - The music ducks −4 dB for 0.6 s on place, rewind and teleport.
-  - Rewind applies a music tape-dip: pitch 1 → 0.92 → 1 over 0.6 s (checkpoint: 0.85 over 1.0 s).
+  - Rewind applies a music tape-dip: pitch 1 → 0.92 → 1 over 0.6 s (checkpoint: 0.85 over 1.0 s; an undo glide: 0.9 over the glide).
   - Limbo low-passes the music to 600 Hz over 0.8 s.
   - Zone change crossfades over 2.5 s with equal power. Tutorial, hub and ending use `hub`; the wings use `rooms`.
 - **Event wiring.** Audio subscribes to gameplay events (`ProjectionSystem.Placed`, `WorldHistory.Rewound`, `CheckpointReached`, `Switch.Changed`, `InstantCamera.Captured`, `PhotoInventory.Changed`, teleports). Gameplay code calls only `IonAudio.Play(Sfx id, Vector3? at = null)`. Nobody else creates AudioSources.
@@ -882,7 +883,8 @@ All values live in one static class, `Ion.Presentation.Motion.Feel`, so tuning h
 | Held-photo sway | continuous | lag spring f = 1.8 Hz, ζ = 0.75 on mouse delta, max 12 px | |
 | Rotate Q/E | continuous | Hold: 60°/s, velocity eases in (τ 0.14 s) and out on release (τ 0.07 s, ≈ 4° coast). Tap: at least 3° with the same easing. Within 2.5° of a multiple of 90°, an eased magnetic settle (τ 0.12 s) after release | No 90° snapping. The overlay draws the exact logical roll (`PhotoHolder.RollDegrees`) and placement uses the same number. Audio: a soft detent every 15°, a firmer one on landing square. |
 | Place | 0.70 s | 0–0.10 s: press-in, scale 1 → 0.985, easeOutQuad. At 0.10 s: world swap. Frost flash 30% → 0 over 0.35 s, easeOutQuart. Photo card scales 1 → 1.08 and fades over 0.30 s, easeOutQuart. Pasted pieces "develop" from a warm desaturated tone over 0.6 s (`FreshPulse`) | FOV +2.5° kick, spring back f = 2 Hz, ζ = 0.8. |
-| Rewind (single) | 0.60 s | Cyanotype wash 0 → 22% → 0 and desaturation 0 → 50% → 0, sine in-out. World swap at 0.22 s. If the pose moves: fade to Paper 0.18 s easeInQuad, hold 0.06 s, fade in 0.30 s easeOutCubic | Never slide the camera through geometry. |
+| Rewind (single, undo) | 0.80 s + 0.04 s/m, ≤ 1.60 s | **Glide** back to the change's recorded pose: position on smootherstep (slow start, fast middle, gentle settle), look slerped on the same curve, a slight upward arc (≤ 1.8 m) when the straight line would pass through geometry. CharacterController off, no gravity, no input, velocity zeroed at the end. Pasted pieces un-develop (reverse `FreshPulse`, warm glow 0 → 0.62, sine in-out) over 0.24 s, then the world undo at 0.24 s. Effects on the glide's speed curve (√ of the normalised smootherstep speed): world desaturation ≤ 62% toward a cool grey, two tape / scanline bands rolling with the glide's position, Cyanotype vignette ≤ 30%, tape loop pitch 0.55 → 1.55 → 0.55 with its level; `rewind_settle` as it lands. The returned photo flies to its slot on smootherstep and lands as the glide settles | A press during a glide is buffered (one) and plays when it settles; within 0.35 s it escalates to R R. If the eye must cross a surface anyway, a soft Paper veil (0.12 s) covers the crossing. |
+| Rewind (fall recovery) | 0.60 s | Cyanotype wash 0 → 22% → 0 and desaturation 0 → 50% → 0, sine in-out. Fade to Paper 0.18 s easeInQuad, the move at 0.22 s, hold 0.06 s, fade in 0.30 s easeOutCubic | Pose only, no world change. |
 | Rewind to checkpoint | 1.00 s | Two `[` `]` brackets close from the screen edges, 0.35 s easeInOutCubic. Swap at 0.40 s. They open in 0.45 s easeOutCubic. Wash 30% | |
 | Nothing to rewind | 0.30 s | HUD `[R]` chip shakes on x, 2 cycles, 5 px, decaying (ζ = 0.3). Toast "Nothing to rewind" for 1.4 s | No camera motion. The hint `R R — back to the checkpoint` is shown the first 3 times. |
 | Fall → limbo | 0.8 s | Vignette and fog in, easeOutCubic. Gravity eases to 15% | Prompt `[R] rewind`. Auto-recover after 4.0 s without input. |
@@ -1001,7 +1003,9 @@ namespace Ion.Gameplay.State
     /// <summary>One undoable world change. Pushed by the code that makes the change.</summary>
     public abstract class WorldChange
     {
-        public PlayerPose SafePose;      // safe pose at the moment of the change (valid in the pre-change world)
+        public PlayerPose Pose;          // exact pose at the moment of the change: where a single R returns the player
+        public bool HasPose;
+        public PlayerPose SafePose;      // safe pose at the moment of the change (fallback when Pose is not standable)
         public float Time;
         public abstract ChangeKind Kind { get; }
         internal abstract void Undo(bool instant);
@@ -1053,7 +1057,12 @@ namespace Ion.Gameplay.State
         public void Reset(PlayerPose pose);
     }
 
-    public sealed class RewindController : MonoBehaviour { public const float DoubleTapWindow = 0.35f; } // R input + transitions
+    public sealed class RewindController : MonoBehaviour   // R input + transitions (the undo glide, the fall fade, the R R iris)
+    {
+        public const float DoubleTapWindow = 0.35f;
+        public bool IsGliding { get; }  public float GlideFx { get; }  public float GlideSpeed01 { get; }  public float GlideRemaining { get; }
+        public static event System.Action<RewindResult> Started;  public static event System.Action GlideEnded;
+    }
 }
 
 namespace Ion.Gameplay
@@ -1094,7 +1103,7 @@ namespace Ion.Gameplay
   The old rewind code in `PhotoHolder` (its R handling and stored pose) is deleted.
 - **Single R** (`RewindOnce`), in priority order:
   1. **Falling or in limbo:** restore `LastSafe` (pose only) and raise `FallRecovered`.
-  2. **`CanUndo`:** undo the top record, then pick the pose. If the player is still supported (a 0.35 m ground probe hits, and the capsule doesn't overlap anything) in the same zone, they stay. Otherwise they move to `record.SafePose` (§9 fade). `SafePoseTracker.Reset` is then called with the result.
+  2. **`CanUndo`:** undo the top record and **always** return the player to the pose the change was made from (`record.Pose`: feet, yaw, pitch, recorded by `WorldHistory.Push` at the moment of the change), even when they stand on solid ground elsewhere. Placing a bridge, crossing and pressing R puts the player back on the near side with the photo in hand. If that exact pose is not standable in the restored world (a press made mid-jump, on a moving deck), they go to `record.SafePose` with the recorded look. `RewindController` plays it as the §9 glide (`WorldHistory.UndoTop` at 0.24 s, the move along the curve); `RewindOnce` does it instantly (tests, debug, last resort). `SafePoseTracker.Reset` is then called with the result. Successive presses walk back through the recorded poses in order. A walk-in pickup that is put back by a rewind collects again only after the player steps away from it.
   3. **Otherwise:** return `Nothing`, with the gentle feedback (§9).
 - **Checkpoint floor.** Single R never crosses the last checkpoint. Records below it are sealed.
 - **Double R** (`RewindToCheckpoint`) happens when a second R arrives within 0.35 s:
@@ -1121,7 +1130,8 @@ namespace Ion.Gameplay
 ### 11.3 Required PlayMode tests
 
 **Lead D** (`RewindTests.cs`, `SwitchTests.cs`):
-- `Rewind_AnywhereUndoesLast_[Placement|Capture|Switch|Pickup]`: R long after the change, from elsewhere in the zone, restores the world and puts the player somewhere safe.
+- `Rewind_AnywhereUndoesLast_[Placement|Capture|Switch|Pickup]`: R long after the change, from elsewhere in the zone, restores the world and returns the player to the pose the change was made from (within 0.05 m; for the placement: after crossing the pasted bridge, back on the near side, grounded, no respawn).
+- `Rewind_SuccessivePresses_WalkBackThroughPoses`, `Rewind_PressDuringGlide_IsBufferedNeverBroken`, `Rewind_GlideFollowsTheCurve`, `DoubleRewind_DuringGlide_RestoresCheckpointPose` (+ EditMode `RewindGlideTests`).
 - `Rewind_NothingToRewind_NoChangeAndFeedback`.
 - `Rewind_RecoversFromFall_NoWorldChange`.
 - `Rewind_NeverCrossesCheckpoint`.

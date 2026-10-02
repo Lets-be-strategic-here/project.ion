@@ -106,6 +106,8 @@ namespace Ion.Presentation
             public Vector2 From;
             public float FromScale, FromRotation;
             public float T;
+            public float Duration;         // > 0: own flight time (a rewind's return, timed to the glide)
+            public bool GameTime;          // advances in game time (in step with the rewind glide)
         }
 
         void Awake()
@@ -467,10 +469,23 @@ namespace Ion.Presentation
         // ---------------------------------------------------------------- arriving photos
 
         /// <summary>The photo flies from the middle of the screen (where it was held up) into its slot.</summary>
-        public void FlyInFromCenter(PhotoData photo)
+        public void FlyInFromCenter(PhotoData photo) => FlyInFromCenter(photo, 0f);
+
+        /// <summary>
+        /// As <see cref="FlyInFromCenter(PhotoData)"/>, landing after <paramref name="seconds"/> of game time on the
+        /// glide's smootherstep curve (a rewind: it lands as the glide settles). 0 = the usual 0.40 s flight.
+        /// </summary>
+        public void FlyInFromCenter(PhotoData photo, float seconds)
         {
             float big = Mathf.Clamp(((RectTransform)transform).rect.height * 0.5f / 90f, 3f, 7f);
-            StartGhost(photo, GhostKind.Center, Vector2.zero, big, 0f, Vector3.zero);
+            Ghost g = StartGhost(photo, GhostKind.Center, Vector2.zero, big, 0f, Vector3.zero);
+            if (g != null && seconds > 0f)
+            {
+                g.Duration = seconds;
+                g.GameTime = true;
+                g.FromRotation = Feel.ReducedMotion ? 0f : -6f;
+                ApplyGhost(g);
+            }
         }
 
         /// <summary>The photo lifts from a world position (a pickup), then flies into its slot.</summary>
@@ -516,9 +531,9 @@ namespace Ion.Presentation
             return false;
         }
 
-        void StartGhost(PhotoData photo, GhostKind kind, Vector2 from, float fromScale, float fromRotation, Vector3 world)
+        Ghost StartGhost(PhotoData photo, GhostKind kind, Vector2 from, float fromScale, float fromRotation, Vector3 world)
         {
-            if (photo == null || _ghostLayer == null) return;
+            if (photo == null || _ghostLayer == null) return null;
             for (int i = _ghosts.Count - 1; i >= 0; i--)
                 if (_ghosts[i].Photo == photo) RemoveGhost(i, false);
 
@@ -568,6 +583,7 @@ namespace Ion.Presentation
             // Hide the real slot until the ghost lands.
             for (int i = 0; i < _slots.Count; i++)
                 if (_slots[i].Photo == photo) _slots[i].Group.alpha = 0f;
+            return g;
         }
 
         void RemoveGhost(int index, bool landed)
@@ -586,6 +602,7 @@ namespace Ion.Presentation
 
         float GhostDuration(Ghost g)
         {
+            if (g.Duration > 0f) return g.Duration;
             switch (g.Kind)
             {
                 case GhostKind.World: return Feel.PickupLiftSeconds + Feel.PickupFlySeconds;
@@ -599,7 +616,7 @@ namespace Ion.Presentation
             for (int i = _ghosts.Count - 1; i >= 0; i--)
             {
                 Ghost g = _ghosts[i];
-                g.T += dt;
+                g.T += g.GameTime ? Mathf.Min(Time.deltaTime, 0.05f) : dt;
                 if (g.T >= GhostDuration(g) || g.Root == null) RemoveGhost(i, true);
                 else ApplyGhost(g);
             }
@@ -654,7 +671,7 @@ namespace Ion.Presentation
                 t -= Feel.PickupLiftSeconds;
             }
 
-            float p01 = Ease.InOutCubic(t / Feel.PickupFlySeconds);
+            float p01 = g.Duration > 0f ? Ease.Smootherstep(t / g.Duration) : Ease.InOutCubic(t / Feel.PickupFlySeconds);
             Vector2 target = SlotTarget(g.Photo, out float targetRot, out float targetScale);
             Vector2 pos = Vector2.LerpUnclamped(from, target, p01);
             if (!Feel.ReducedMotion) pos.y += Mathf.Sin(p01 * Mathf.PI) * 40f; // a little arc

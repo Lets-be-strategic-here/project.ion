@@ -88,6 +88,9 @@ namespace Ion.Gameplay.State
         void Update()
         {
             if (_fpc == null) return;
+            // A rewind glide moves the body through the air on purpose: no samples, no fall (the glide resets
+            // the tracker where it lands).
+            if (_fpc.IsGliding) return;
             Vector3 feet = transform.position;
             int zone = ZoneInfo.ZoneOf(feet);
             bool grounded = _fpc.IsGrounded;

@@ -171,6 +171,63 @@ namespace Ion.Gameplay
         }
         bool _frozen;
 
+        // ---------------------------------------------------------------- rewind glide
+
+        bool _gliding;
+
+        /// <summary>
+        /// True while a rewind glides the body back to an earlier pose (<see cref="BeginGlide"/>): the
+        /// CharacterController is off (no collisions), there is no gravity or walking, and the look follows the
+        /// glide instead of the mouse.
+        /// </summary>
+        public bool IsGliding => _gliding;
+
+        /// <summary>Starts a rewind glide: input and gravity off, CharacterController disabled, velocity zeroed.</summary>
+        public void BeginGlide()
+        {
+            _gliding = true;
+            Frozen = true;
+            StopScriptedWalk();
+            _nudgeT = _nudgeSeconds;
+            _noAirControl = false;
+            _jumpPressedTime = -10f;
+            if (_cc != null) _cc.enabled = false;
+            ResetViewEffects();
+        }
+
+        /// <summary>Places the gliding body (feet position) and its view. Only while <see cref="IsGliding"/>.</summary>
+        public void SetGlidePose(Vector3 feet, float yaw, float pitch)
+        {
+            if (!_gliding) return;
+            transform.position = feet;
+            _yaw = Mathf.Repeat(yaw, 360f);
+            _pitch = Mathf.Clamp(pitch, -MaxPitch, MaxPitch);
+            ApplyRotation();
+        }
+
+        /// <summary>
+        /// Ends a rewind glide at <paramref name="feet"/> / <paramref name="yaw"/> / <paramref name="pitch"/>:
+        /// the CharacterController is back on, every velocity is zero, the view effects are reset. Stays
+        /// <see cref="Frozen"/> (the rewind releases it). No <see cref="Teleported"/> event.
+        /// </summary>
+        public void EndGlide(Vector3 feet, float yaw, float pitch)
+        {
+            if (!_gliding) return;
+            _gliding = false;
+            transform.position = feet;
+            _yaw = Mathf.Repeat(yaw, 360f);
+            _pitch = Mathf.Clamp(pitch, -MaxPitch, MaxPitch);
+            ApplyRotation();
+            _horizontalVelocity = Vector3.zero;
+            _verticalVelocity = 0f;
+            _fallSpeed = 0f;
+            _wasGrounded = true;
+            GravityScale = 1f;
+            _fallLimit = -1f;
+            if (_cc != null) _cc.enabled = true;
+            ResetViewEffects();
+        }
+
         /// <summary>Holds the view and the body still (the 0.10 s place press-in). Gravity still applies.</summary>
         public bool HoldStill { get; set; }
 
@@ -180,7 +237,7 @@ namespace Ion.Gameplay
         public CharacterController Controller => _cc;
         public float Yaw => _yaw;
         public float Pitch => _pitch;
-        public bool IsGrounded => _cc != null && _cc.isGrounded;
+        public bool IsGrounded => _cc != null && _cc.enabled && _cc.isGrounded && !_gliding;
         public Vector3 Velocity => _horizontalVelocity + Vector3.up * _verticalVelocity;
         public Vector3 CheckpointPosition => _checkpointPosition;
 
@@ -414,7 +471,7 @@ namespace Ion.Gameplay
 
         void HandleLook()
         {
-            if (!_inputEnabled || HoldStill) return;
+            if (!_inputEnabled || HoldStill || _gliding) return;
             Vector2 px = IonInput.LookDelta;
             if (px.sqrMagnitude < 1e-8f) return;
             Vector2 delta = px * MouseSensitivity; // NOT * deltaTime
@@ -630,6 +687,7 @@ namespace Ion.Gameplay
         /// </summary>
         public void Teleport(Vector3 position, float yaw, bool silent)
         {
+            _gliding = false; // a teleport (checkpoint restore) ends any glide
             _nudgeT = _nudgeSeconds;
             _noAirControl = false;
             Vector3 from = transform.position;

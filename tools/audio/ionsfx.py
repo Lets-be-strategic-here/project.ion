@@ -495,6 +495,37 @@ def rewind_checkpoint():
     return finish(b, 0.3, hall_ir())
 
 
+def rewind_tape_loop():
+    """The rewind glide's tape: an exact 1 s loop of tape chattering past the heads at a steady speed.
+    IonAudio plays it with AudioSource.pitch following the glide's speed (slow -> fast -> settle), so its
+    pitch and its chatter rate rise and fall together, like a real tape being rewound."""
+    loop = 1.0
+    n = L.secs(SR, loop)
+    r = rng(127)
+    t = t_(n)
+    ph = 300.0 * t                                                         # 300 whole cycles per loop
+    saw = 2.0 * (ph % 1.0) - 1.0
+    chatter = 0.62 + 0.38 * np.sign(np.sin(L.TAU * 12.0 * t))              # 12 whole cycles: the spool's flutter
+    tone = L.lp_circular(L.hp_circular(saw * chatter, 300.0, SR, 2), 3500.0, SR, 2)
+    whir = periodic_tone(150.0, n) * 0.18 + periodic_tone(450.0, n, 0.7) * 0.06
+    hiss = L.periodic_noise(n, SR, r, L.band_shape(2000.0, 9000.0, 2.0)) * 0.22
+    x = (tone * 0.8 + whir) * (0.86 + 0.14 * periodic_tone(4.0, n)) + hiss
+    return finish(x, 0.08, room_ir(), loop=True)
+
+
+def rewind_settle():
+    """The glide settling: the tape stops with a soft clunk and lands in key (D5 + A4 kalimba, F#4 felt piano)."""
+    r = rng(128)
+    b = buf(2.2)
+    at(b, click(r, 900.0, 0.004, 0.012, 0.35, 0.05), 0.0)                  # the tape stops
+    at(b, thump(r, 96.0, 0.04, 0.3, 0.2, 240.0), 0.0)
+    at(b, kal("D5", 0.42, seed=61), 0.01)
+    at(b, kal("A4", 0.32, seed=62), 0.03)
+    at(b, piano("F#4", 0.3, 0.22, seed=63), 0.05)
+    x = finish(b, 0.3, hall_ir())
+    return L.edge_fade(x[:L.secs(SR, 2.4)], SR, 0.0, 0.6)                 # the tail fades by 2.4 s (download size)
+
+
 def checkpoint_set():
     b = buf(2.0)
     at(b, kal("D5", 0.7, seed=51), 0.0)
@@ -573,6 +604,7 @@ SFX = {
     "collapse_crack": collapse_crack, "collapse_fall": collapse_fall,
     "fall_whoosh": fall_whoosh, "limbo_drone_loop": limbo_drone_loop,
     "rewind_nothing": rewind_nothing, "rewind_checkpoint": rewind_checkpoint, "checkpoint_set": checkpoint_set,
+    "rewind_tape_loop": rewind_tape_loop, "rewind_settle": rewind_settle,
     "exhibit_wake": exhibit_wake, "hatch_rise": hatch_rise, "land": land,
 }
 for _set in FOOTSTEP_SETS:

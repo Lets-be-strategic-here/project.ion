@@ -105,6 +105,10 @@ namespace Ion.Presentation.Motion
         }
         public static float OutQuart(float t) { t = 1f - Mathf.Clamp01(t); return 1f - t * t * t * t; }
         public static float InOutSine(float t) { t = Mathf.Clamp01(t); return -(Mathf.Cos(Mathf.PI * t) - 1f) * 0.5f; }
+        /// <summary>Smootherstep 6t⁵ − 15t⁴ + 10t³: slow start, fast middle, gentle settle (zero speed and acceleration at both ends).</summary>
+        public static float Smootherstep(float t) { t = Mathf.Clamp01(t); return t * t * t * (t * (t * 6f - 15f) + 10f); }
+        /// <summary>Speed of <see cref="Smootherstep"/>, normalised to peak at 1 (t = 0.5): 30t²(1 − t)² / 1.875.</summary>
+        public static float SmootherstepSpeed(float t) { t = Mathf.Clamp01(t); float u = t * (1f - t); return 16f * u * u; }
         /// <summary>Sine bump 0 → 1 → 0 (sine in-out up, then down).</summary>
         public static float SineBump(float t) { t = Mathf.Clamp01(t); return Mathf.Sin(Mathf.PI * t); }
         /// <summary>easeOutBack with overshoot <paramref name="s"/> (bible: s = 1.3 for the pickup lift).</summary>
